@@ -59,3 +59,17 @@ test("serializes settings mutations after a rejected mutation", async () => {
   assert.equal(await recovered, 2);
   assert.deepEqual(order, ["first", "second"]);
 });
+
+ test("keeps the queued handoff occupied when a completion handler submits work", async () => {
+  const scheduler = new CoalescingTask();
+  let runs = 0;
+  let late: Promise<void> | undefined;
+  const task = async () => { runs += 1; await Promise.resolve(); };
+  const first = scheduler.run(task);
+  void first.then(() => { late = scheduler.run(task); });
+  const queued = scheduler.run(task);
+  await first;
+  await queued;
+  await late;
+  assert.equal(runs, 2);
+});
