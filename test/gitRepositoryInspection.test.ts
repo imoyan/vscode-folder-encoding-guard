@@ -614,6 +614,546 @@ test("treats an empty working-tree encoding as disabled", gitTestOptions, async 
   });
 });
 
+test("does not treat a committed symlink target as text history", nonWindowsGitTestOptions, async (context) => {
+  const repository = createRepository(context);
+  symlinkSync("target", path.join(repository, "sample.txt"));
+  commitAll(repository);
+  rmSync(path.join(repository, "sample.txt"));
+  writeFileSync(path.join(repository, "sample.txt"), "one\ntwo\n");
+  const headCommit = git(repository, "rev-parse", "HEAD").trim();
+
+  const result = await inspectGitRepository(
+    "git",
+    repository,
+    headCommit,
+    [target(repository, {
+      key: "sample",
+      currentPath: "sample.txt",
+      headPath: "sample.txt",
+      expectedEncoding: "utf8",
+      maxSize: 1024,
+      readCurrentAttributes: false,
+    })],
+    neverCancelled,
+  );
+
+  assert.deepEqual(result.get("sample")?.head, { kind: "failed" });
+});
+
+test("does not treat a committed gitlink as absent after a working-tree type change", gitTestOptions, async (context) => {
+  const repository = createRepository(context);
+  writeFileSync(path.join(repository, "tracked.txt"), "base\n");
+  commitAll(repository);
+  const linkedCommit = git(repository, "rev-parse", "HEAD").trim();
+  git(
+    repository,
+    "update-index",
+    "--add",
+    "--cacheinfo",
+    `160000,${linkedCommit},module`,
+  );
+  commitIndex(repository);
+  writeFileSync(path.join(repository, "module"), "regular file\n");
+  const headCommit = git(repository, "rev-parse", "HEAD").trim();
+
+  const result = await inspectGitRepository(
+    "git",
+    repository,
+    headCommit,
+    [target(repository, {
+      key: "module",
+      currentPath: "module",
+      headPath: "module",
+      expectedEncoding: "utf8",
+      maxSize: 1024,
+      readCurrentAttributes: false,
+    })],
+    neverCancelled,
+  );
+
+  assert.deepEqual(result.get("module")?.head, { kind: "failed" });
+});
+
+test("honors legacy crlf when resolving current eol rules", gitTestOptions, async (context) => {
+  const repository = createRepository(context);
+  const fsMonitorMarker = path.join(repository, "fsmonitor-ran");
+  const fsMonitorScript = path.join(repository, "fsmonitor.cjs");
+  writeFileSync(
+    path.join(repository, ".gitattributes"),
+    "sample.txt -crlf eol=crlf\n",
+  );
+  writeFileSync(path.join(repository, "sample.txt"), "one\ntwo\n");
+  writeFileSync(
+    fsMonitorScript,
+    `require("node:fs").writeFileSync(${JSON.stringify(fsMonitorMarker)},"ran")`,
+  );
+  git(repository, "config", "core.autocrlf", "true");
+  git(
+    repository,
+    "config",
+    "core.fsmonitor",
+    quoteCommand(process.execPath, fsMonitorScript),
+  );
+
+  const result = await inspectGitRepository(
+    "git",
+    repository,
+    undefined,
+    [target(repository, {
+      key: "sample",
+      currentPath: "sample.txt",
+      expectedEncoding: "utf8",
+      maxSize: 1024,
+      readCurrentAttributes: true,
+    })],
+    neverCancelled,
+  );
+
+  assert.equal(result.get("sample")?.expectedLineEnding, undefined);
+  assert.equal(result.get("sample")?.attributeLookupFailed, false);
+  assert.equal(existsSync(fsMonitorMarker), false);
+});
+
+test("fails safely for ambiguous set and unset attribute values", gitTestOptions, async (context) => {
+  const repository = createRepository(context);
+  writeFileSync(path.join(repository, ".gitattributes"), "sample.txt text=set\n");
+  writeFileSync(path.join(repository, "sample.txt"), "one\ntwo\n");
+  commitAll(repository);
+  git(repository, "config", "core.eol", "crlf");
+  const headCommit = git(repository, "rev-parse", "HEAD").trim();
+
+  const result = await inspectGitRepository(
+    "git",
+    repository,
+    headCommit,
+    [target(repository, {
+      key: "sample",
+      currentPath: "sample.txt",
+      headPath: "sample.txt",
+      expectedEncoding: "utf8",
+      maxSize: 1024,
+      readCurrentAttributes: false,
+    })],
+    neverCancelled,
+  );
+
+  assert.deepEqual(result.get("sample")?.head, { kind: "failed" });
+});
+
+test("invalidates a cached HEAD baseline when checkout policy or HEAD path changes", gitTestOptions, async (context) => {
+  const repository = createRepository(context);
+  git(repository, "config", "core.eol", "lf");
+  writeFileSync(path.join(repository, ".gitattributes"), "*.txt text=auto\n");
+  writeFileSync(path.join(repository, "first.txt"), "one\ntwo\n");
+  writeFileSync(path.join(repository, "second.txt"), "three\nfour\n");
+  commitAll(repository);
+  const headCommit = git(repository, "rev-parse", "HEAD").trim();
+  const initial = await inspectGitRepository(
+    "git",
+    repository,
+    headCommit,
+    [target(repository, {
+      key: "file",
+      currentPath: "first.txt",
+      headPath: "first.txt",
+      expectedEncoding: "utf8",
+      maxSize: 1024,
+      readCurrentAttributes: false,
+    })],
+    neverCancelled,
+  );
+  const initialIdentity = initial.get("file")?.historyIdentity;
+  assert.match(initialIdentity ?? "", /^git:/);
+
+  const cached = await inspectGitRepository(
+    "git",
+    repository,
+    headCommit,
+    [target(repository, {
+      key: "file",
+      currentPath: "first.txt",
+      headPath: "first.txt",
+      expectedEncoding: "utf8",
+      maxSize: 1024,
+      readCurrentAttributes: false,
+      baselineIdentity: initialIdentity,
+      baselineSource: "git",
+    })],
+    neverCancelled,
+  );
+  assert.deepEqual(cached.get("file")?.head, { kind: "notNeeded" });
+
+  const refreshedUnknownDetails = await inspectGitRepository(
+    "git",
+    repository,
+    headCommit,
+    [target(repository, {
+      key: "file",
+      currentPath: "first.txt",
+      headPath: "first.txt",
+      expectedEncoding: "utf8",
+      maxSize: 1024,
+      readCurrentAttributes: false,
+      baselineIdentity: initialIdentity,
+      baselineSource: "git",
+      baselineDetailsKnown: false,
+    })],
+    neverCancelled,
+  );
+  assert.deepEqual(refreshedUnknownDetails.get("file")?.head, {
+    kind: "found",
+    lineEndings: { kind: "lf", styles: ["lf"] },
+  });
+
+  git(repository, "config", "core.eol", "crlf");
+  const changedPolicy = await inspectGitRepository(
+    "git",
+    repository,
+    headCommit,
+    [target(repository, {
+      key: "file",
+      currentPath: "first.txt",
+      headPath: "first.txt",
+      expectedEncoding: "utf8",
+      maxSize: 1024,
+      readCurrentAttributes: false,
+      baselineIdentity: initialIdentity,
+      baselineSource: "git",
+    })],
+    neverCancelled,
+  );
+  assert.notEqual(changedPolicy.get("file")?.historyIdentity, initialIdentity);
+  assert.deepEqual(changedPolicy.get("file")?.head, {
+    kind: "found",
+    lineEndings: { kind: "crlf", styles: ["crlf"] },
+  });
+
+  const renamedPath = await inspectGitRepository(
+    "git",
+    repository,
+    headCommit,
+    [target(repository, {
+      key: "file",
+      currentPath: "first.txt",
+      headPath: "second.txt",
+      expectedEncoding: "utf8",
+      maxSize: 1024,
+      readCurrentAttributes: false,
+      baselineIdentity: changedPolicy.get("file")?.historyIdentity,
+      baselineSource: "git",
+    })],
+    neverCancelled,
+  );
+  assert.notEqual(
+    renamedPath.get("file")?.historyIdentity,
+    changedPolicy.get("file")?.historyIdentity,
+  );
+  assert.equal(renamedPath.get("file")?.head.kind, "found");
+});
+
+test("fails safely when UTF-16 would receive byte-oriented CRLF conversion", gitTestOptions, async (context) => {
+  const repository = createRepository(context);
+  writeFileSync(path.join(repository, ".gitattributes"), "utf16.txt text eol=crlf\n");
+  writeFileSync(path.join(repository, "utf16.txt"), Buffer.from([0x61, 0x00, 0x0a, 0x00]));
+  commitAll(repository);
+  const headCommit = git(repository, "rev-parse", "HEAD").trim();
+
+  const result = await inspectGitRepository(
+    "git",
+    repository,
+    headCommit,
+    [target(repository, {
+      key: "utf16",
+      currentPath: "utf16.txt",
+      headPath: "utf16.txt",
+      expectedEncoding: "utf16le",
+      maxSize: 1024,
+      readCurrentAttributes: false,
+    })],
+    neverCancelled,
+  );
+
+  assert.deepEqual(result.get("utf16")?.head, { kind: "failed" });
+});
+
+test("does not read a HEAD blob larger than the file limit", gitTestOptions, async (context) => {
+  const repository = createRepository(context);
+  writeFileSync(path.join(repository, "large.txt"), "one\ntwo\n");
+  commitAll(repository);
+  const headCommit = git(repository, "rev-parse", "HEAD").trim();
+
+  const result = await inspectGitRepository(
+    "git",
+    repository,
+    headCommit,
+    [target(repository, {
+      key: "large",
+      currentPath: "large.txt",
+      headPath: "large.txt",
+      expectedEncoding: "utf8",
+      maxSize: 1,
+      readCurrentAttributes: false,
+    })],
+    neverCancelled,
+  );
+
+  assert.deepEqual(result.get("large")?.head, { kind: "failed" });
+});
+
+test("reports an unreadable tracked blob instead of treating it as absent", gitTestOptions, async (context) => {
+  const repository = createRepository(context);
+  writeFileSync(path.join(repository, "tracked.txt"), "one\ntwo\n");
+  commitAll(repository);
+  const headCommit = git(repository, "rev-parse", "HEAD").trim();
+  const blob = git(repository, "rev-parse", "HEAD:tracked.txt").trim();
+  rmSync(path.join(repository, ".git", "objects", blob.slice(0, 2), blob.slice(2)));
+
+  const result = await inspectGitRepository(
+    "git",
+    repository,
+    headCommit,
+    [target(repository, {
+      key: "tracked",
+      currentPath: "tracked.txt",
+      headPath: "tracked.txt",
+      expectedEncoding: "utf8",
+      maxSize: 1024,
+      readCurrentAttributes: false,
+    })],
+    neverCancelled,
+  );
+
+  assert.deepEqual(result.get("tracked")?.head, { kind: "failed" });
+});
+
+test("keeps cached results when a later blob read fails", nonWindowsGitTestOptions, async (context) => {
+  const repository = createRepository(context);
+  writeFileSync(path.join(repository, "cached.txt"), "cached\n");
+  writeFileSync(path.join(repository, "uncached.txt"), "uncached\n");
+  commitAll(repository);
+  const headCommit = git(repository, "rev-parse", "HEAD").trim();
+  const cachedTarget = target(repository, {
+    key: "cached",
+    currentPath: "cached.txt",
+    headPath: "cached.txt",
+    expectedEncoding: "utf8",
+    maxSize: 1024,
+    readCurrentAttributes: false,
+  });
+  const initial = await inspectGitRepository(
+    "git",
+    repository,
+    headCommit,
+    [cachedTarget],
+    neverCancelled,
+  );
+  const wrapper = path.join(repository, "git-wrapper.cjs");
+  const gitExecutable = execFileSync("which", ["git"], { encoding: "utf8" }).trim();
+  writeFileSync(
+    wrapper,
+    `#!/usr/bin/env node\n` +
+      `const {spawnSync}=require("node:child_process");\n` +
+      `if(process.argv.includes("cat-file")){process.exit(7);}\n` +
+      `const result=spawnSync(${JSON.stringify(gitExecutable)},process.argv.slice(2),{stdio:"inherit",env:process.env});\n` +
+      `if(result.error){throw result.error;}process.exit(result.status ?? 1);\n`,
+  );
+  chmodSync(wrapper, 0o755);
+
+  const result = await inspectGitRepository(
+    wrapper,
+    repository,
+    headCommit,
+    [
+      {
+        ...cachedTarget,
+        baselineIdentity: initial.get("cached")?.historyIdentity,
+        baselineSource: "git",
+      },
+      target(repository, {
+        key: "uncached",
+        currentPath: "uncached.txt",
+        headPath: "uncached.txt",
+        expectedEncoding: "utf8",
+        maxSize: 1024,
+        readCurrentAttributes: false,
+      }),
+    ],
+    neverCancelled,
+  );
+
+  assert.deepEqual(result.get("cached")?.head, { kind: "notNeeded" });
+  assert.deepEqual(result.get("uncached")?.head, { kind: "failed" });
+});
+
+test("classifies a shared HEAD blob once per encoding", gitTestOptions, async (context) => {
+  const repository = createRepository(context);
+  writeFileSync(path.join(repository, "first.txt"), "shared\n");
+  writeFileSync(path.join(repository, "second.txt"), "shared\n");
+  commitAll(repository);
+  const headCommit = git(repository, "rev-parse", "HEAD").trim();
+  let verificationCount = 0;
+
+  const result = await inspectGitRepository(
+    "git",
+    repository,
+    headCommit,
+    ["first.txt", "second.txt"].map((filePath) => target(repository, {
+      key: filePath,
+      currentPath: filePath,
+      headPath: filePath,
+      expectedEncoding: "utf8",
+      maxSize: 1024,
+      readCurrentAttributes: false,
+    })),
+    neverCancelled,
+    {
+      verifyEncoding: async () => {
+        verificationCount += 1;
+        return true;
+      },
+    },
+  );
+
+  assert.equal(verificationCount, 1);
+  assert.deepEqual(result.get("first.txt")?.head, {
+    kind: "found",
+    lineEndings: { kind: "lf", styles: ["lf"] },
+  });
+  assert.deepEqual(result.get("second.txt")?.head, {
+    kind: "found",
+    lineEndings: { kind: "lf", styles: ["lf"] },
+  });
+});
+
+test("shares the HEAD content budget across repositories", gitTestOptions, async (context) => {
+  const firstRepository = createRepository(context);
+  const secondRepository = createRepository(context);
+  for (const repository of [firstRepository, secondRepository]) {
+    writeFileSync(path.join(repository, "tracked.txt"), "one\n");
+    commitAll(repository);
+  }
+  const budget = createGitInspectionBudget(7);
+  const inspect = async (repository: string) => inspectGitRepository(
+    "git",
+    repository,
+    git(repository, "rev-parse", "HEAD").trim(),
+    [target(repository, {
+      key: "tracked",
+      currentPath: "tracked.txt",
+      headPath: "tracked.txt",
+      expectedEncoding: "utf8",
+      maxSize: 1024,
+      readCurrentAttributes: false,
+    })],
+    neverCancelled,
+    { budget },
+  );
+
+  assert.deepEqual((await inspect(firstRepository)).get("tracked")?.head, {
+    kind: "found",
+    lineEndings: { kind: "lf", styles: ["lf"] },
+  });
+  assert.deepEqual((await inspect(secondRepository)).get("tracked")?.head, {
+    kind: "failed",
+  });
+  assert.equal(budget.remainingHeadContentBytes, 3);
+});
+
+test("chunks attribute requests and ignores a false promisor setting", gitTestOptions, async (context) => {
+  const repository = createRepository(context);
+  writeFileSync(path.join(repository, ".gitattributes"), "*.txt text eol=crlf\n");
+  writeFileSync(path.join(repository, "tracked.txt"), "one\r\ntwo\r\n");
+  writeFileSync(path.join(repository, "auto.dat"), "one\ntwo\n");
+  commitAll(repository);
+  git(repository, "config", "remote.origin.promisor", "false");
+  git(repository, "config", "core.autocrlf", "yes");
+  const headCommit = git(repository, "rev-parse", "HEAD").trim();
+  const targets: RepositoryInspectionTarget[] = Array.from({ length: 205 }, (_, index) => target(repository, {
+    key: `file-${index}`,
+    currentPath: `file-${index}.txt`,
+    expectedEncoding: "utf8",
+    maxSize: 1024,
+    readCurrentAttributes: true,
+  }));
+  targets.push(target(repository, {
+    key: "tracked",
+    currentPath: "tracked.txt",
+    headPath: "tracked.txt",
+    expectedEncoding: "utf8",
+    maxSize: 1024,
+    readCurrentAttributes: true,
+  }));
+  targets.push(target(repository, {
+    key: "auto",
+    currentPath: "auto.dat",
+    headPath: "auto.dat",
+    expectedEncoding: "utf8",
+    maxSize: 1024,
+    readCurrentAttributes: false,
+  }));
+
+  const result = await inspectGitRepository(
+    "git",
+    repository,
+    headCommit,
+    targets,
+    neverCancelled,
+  );
+
+  assert.equal(result.size, 207);
+  assert.equal(result.get("file-204")?.expectedLineEnding, "crlf");
+  assert.deepEqual(result.get("tracked")?.head, {
+    kind: "found",
+    lineEndings: { kind: "crlf", styles: ["crlf"] },
+  });
+  assert.deepEqual(result.get("auto")?.head, {
+    kind: "found",
+    lineEndings: { kind: "crlf", styles: ["crlf"] },
+  });
+});
+
+test("treats a bare promisor setting as a partial clone", gitTestOptions, async (context) => {
+  const repository = createRepository(context);
+  writeFileSync(path.join(repository, "tracked.txt"), "one\ntwo\n");
+  commitAll(repository);
+  const headCommit = git(repository, "rev-parse", "HEAD").trim();
+  appendFileSync(
+    path.join(repository, ".git", "config"),
+    "\n[remote \"origin\"]\n\tpromisor\n",
+  );
+
+  assert.deepEqual(
+    await readRepositoryHead("git", repository, neverCancelled),
+    { kind: "found", commit: headCommit },
+  );
+
+  const result = await inspectGitRepository(
+    "git",
+    repository,
+    headCommit,
+    [target(repository, {
+      key: "tracked",
+      currentPath: "tracked.txt",
+      headPath: "tracked.txt",
+      expectedEncoding: "utf8",
+      maxSize: 1024,
+      readCurrentAttributes: true,
+    })],
+    neverCancelled,
+  );
+
+  assert.deepEqual(result.get("tracked")?.head, { kind: "failed" });
+  assert.equal(result.get("tracked")?.attributeLookupFailed, true);
+
+  const missingCommit = "a".repeat(40);
+  const headReference = git(repository, "symbolic-ref", "HEAD").trim();
+  writeFileSync(path.join(repository, ".git", headReference), `${missingCommit}\n`);
+  assert.deepEqual(
+    await readRepositoryHead("git", repository, neverCancelled),
+    { kind: "found", commit: missingCommit },
+  );
+});
+
 test("treats every non-zero numeric promisor value as true", gitTestOptions, async (context) => {
   const repository = createRepository(context);
   for (const value of ["2", "-1", "01", "1k", "0x1"]) {
