@@ -5,6 +5,8 @@ import {
   rmSync,
   symlinkSync,
   writeFileSync,
+  statSync,
+  utimesSync,
 } from "node:fs";
 import { tmpdir } from "node:os";
 import path from "node:path";
@@ -79,3 +81,26 @@ function temporaryDirectory(context: TestContext): string {
   context.after(() => rmSync(directory, { recursive: true, force: true }));
   return directory;
 }
+
+test("rejects an in-place edit whose length and mtime are restored", async (context) => {
+  const dir = temporaryDirectory(context);
+  const file = path.join(dir, "same.txt");
+  writeFileSync(file, "before");
+  const metadata = statSync(file);
+  const before = await readStableLocalFile(file, 1024);
+  writeFileSync(file, "edited");
+  utimesSync(file, metadata.atime, metadata.mtime);
+  assert.equal(await localFileStillMatches(file, before!, 1024), false);
+});
+
+test("treats disappearance after reading as an unstable result", async (context) => {
+  const dir = temporaryDirectory(context);
+  const file = path.join(dir, "gone.txt");
+  writeFileSync(file, "data");
+  let checks = 0;
+  const result = await readStableLocalFile(file, 1024, () => {
+    if (++checks === 6) rmSync(file, { force: true });
+    return false;
+  });
+  assert.equal(result, undefined);
+});

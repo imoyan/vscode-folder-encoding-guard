@@ -3,6 +3,7 @@ export class CoalescingTask {
   private queued: Promise<void> | undefined;
 
   public run(task: () => Promise<void>): Promise<void> {
+    if (this.queued) return this.queued;
     if (!this.active) {
       return this.start(task);
     }
