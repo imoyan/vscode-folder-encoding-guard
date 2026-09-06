@@ -40,7 +40,7 @@ export function isMixedLineEndingAllowed(uri: vscode.Uri): boolean {
 }
 
 export function fileUriForResource(uri: vscode.Uri): vscode.Uri {
-  return uri.scheme === "file"
+  return uri.scheme !== "git"
     ? uri
     : vscode.Uri.file(uri.fsPath || uri.path).with({ fragment: "", query: "" });
 }

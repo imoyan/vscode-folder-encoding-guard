@@ -34,13 +34,17 @@ export function diagnosticFor(document: vscode.TextDocument): vscode.Diagnostic 
   return diagnostic;
 }
 
+const queuedRepairs = new Map<string, { document: vscode.TextDocument; pending: PendingEncodingSave }>();
+
 export async function repairMismatchedSave(
   document: vscode.TextDocument,
   pending: PendingEncodingSave,
   repairing: Set<string>,
 ): Promise<void> {
   const key = document.uri.toString();
-  if (document.uri.scheme !== "file" || repairing.has(key)) {
+  if (document.uri.scheme !== "file") return;
+  if (repairing.has(key)) {
+    queuedRepairs.set(key, { document, pending });
     return;
   }
   repairing.add(key);
@@ -83,6 +87,9 @@ export async function repairMismatchedSave(
     void vscode.window.showErrorMessage(`期待する文字コードでの保存修復に失敗しました: ${message}`);
   } finally {
     repairing.delete(key);
+    const queued = queuedRepairs.get(key);
+    queuedRepairs.delete(key);
+    if (queued) await repairMismatchedSave(queued.document, queued.pending, repairing);
   }
 }
 
