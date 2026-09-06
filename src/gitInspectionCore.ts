@@ -349,7 +349,8 @@ export function hasExternalGitFilter(
   if (config?.checkoutFilterDrivers) {
     return config.checkoutFilterDrivers.has(value);
   }
-  return value !== "unspecified" && value !== "set" && value !== "unset";
+  // Reserved-looking values can also name a literal driver.
+  return true;
 }
 
 export function gitWouldTreatAsText(bytes: Uint8Array): boolean {

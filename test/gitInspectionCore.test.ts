@@ -139,7 +139,7 @@ test("uses only effective eol rules without an external filter", () => {
   assert.equal(effectiveEolRule({ eol: "crlf" }), "crlf");
   assert.equal(effectiveEolRule({ text: "unset", eol: "crlf" }), undefined);
   assert.equal(hasExternalGitFilter({ filter: "lfs" }), true);
-  assert.equal(hasExternalGitFilter({ filter: "unset" }), false);
+  assert.equal(hasExternalGitFilter({ filter: "unset" }), true);
   assert.equal(
     hasExternalGitFilter(
       { filter: "unset" },
@@ -270,4 +270,12 @@ test("fails closed for malformed, conflicted, and duplicate staged rename data",
     ),
     { kind: "failed" },
   );
+});
+
+test("does not assume reserved filter values are filter-free without driver information", () => {
+  for (const value of ["set", "unset", "unspecified"]) {
+    assert.equal(hasExternalGitFilter({filter:value}), true);
+    assert.equal(hasExternalGitFilter({filter:value}, {checkoutFilterDrivers:new Set()}), false);
+    assert.equal(hasExternalGitFilter({filter:value}, {checkoutFilterDrivers:new Set([value])}), true);
+  }
 });
