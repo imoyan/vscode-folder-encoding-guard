@@ -124,7 +124,7 @@ async function repositoryRootMatchesGit(
       ["-C", repositoryRoot, "rev-parse", "--show-toplevel"],
       { maxOutputBytes: 16 * 1024, token },
     );
-    const reportedRoot = output.toString("utf8").trim();
+    const reportedRoot = output.toString("utf8").replace(/\n$/, "");
     if (!reportedRoot) {
       return false;
     }
@@ -885,19 +885,20 @@ async function readFilterCommandDrivers(
         repositoryRoot,
         "config",
         "--null",
-        "--name-only",
         "--get-regexp",
         "^filter\\..*\\.(smudge|process)$",
       ],
       { maxOutputBytes: 1024 * 1024, token },
     );
-    const commandDrivers = output
-      .toString("utf8")
-      .split("\0")
-      .flatMap((key) => {
-        const match = /^filter\.(.*)\.(?:smudge|process)$/.exec(key);
-        return match ? [match[1]!] : [];
-      });
+    const effective = new Map<string, string>();
+    for (const record of output.toString("utf8").split("\0")) {
+      const separator = record.indexOf("\n");
+      if (separator >= 0) effective.set(record.slice(0, separator), record.slice(separator + 1));
+    }
+    const commandDrivers = [...effective].flatMap(([key, value]) => {
+      const match = /^filter\.(.*)\.(?:smudge|process)$/.exec(key);
+      return match && value.length > 0 ? [match[1]!] : [];
+    });
     return new Set(commandDrivers);
   } catch (error) {
     throwIfCancelled(token);
@@ -927,17 +928,14 @@ async function readRequiredFilterDrivers(
       ],
       { maxOutputBytes: 1024 * 1024, token },
     );
-    const drivers = output
-      .toString("utf8")
-      .split("\0")
-      .flatMap((record) => {
-        const separator = record.indexOf("\n");
-        if (separator < 0 || record.slice(separator + 1) !== "true") {
-          return [];
-        }
-        const match = /^filter\.(.*)\.required$/.exec(record.slice(0, separator));
-        return match ? [match[1]!] : [];
-      });
+    const effective = new Map<string, boolean>();
+    for (const record of output.toString("utf8").split("\0")) {
+      const separator = record.indexOf("\n");
+      if (separator < 0) continue;
+      const match = /^filter\.(.*)\.required$/.exec(record.slice(0, separator));
+      if (match) effective.set(match[1]!, record.slice(separator + 1) === "true");
+    }
+    const drivers = [...effective].flatMap(([driver, required]) => required ? [driver] : []);
     return new Set(drivers);
   } catch (error) {
     throwIfCancelled(token);
