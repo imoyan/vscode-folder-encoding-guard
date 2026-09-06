@@ -51,6 +51,13 @@ export function patternForFolder(relativePath: string): string {
   return normalized.length === 0 ? "**" : `${escape(normalized)}/**`;
 }
 
+// Existing entries are literal file paths. A trailing slash denotes a folder,
+// not a glob, so names containing [] or * are never interpreted as patterns.
+export function isMixedPathAllowed(entries: readonly string[], relativePath: string): boolean {
+  return entries.some((entry) => entry === relativePath ||
+    (entry.endsWith("/") && (entry === "./" || relativePath.startsWith(entry))));
+}
+
 export function findMatchingRule(
   rules: readonly EncodingRule[],
   relativePath: string,
