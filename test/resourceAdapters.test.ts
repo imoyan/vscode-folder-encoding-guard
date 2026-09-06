@@ -89,3 +89,19 @@ test("a partial undo write retains recovery state and can be retried", async () 
   assert.equal(state.get("protected"), undefined);
   assert.ok(prompts.some((message) => message.includes("現在の内容を置き換えて")));
 });
+
+
+test("file-backed UNC storage reaches filesystem containment checks", async () => {
+  let checks = 0;
+  const backup = loadModule<{ isConversionBackupSession(root: unknown, candidate: unknown): Promise<boolean> }>("conversionBackup.ts", {
+    "node:crypto": {}, vscode: { env: {} }, "./conversionCore.js": {}, "./stableResourceRead.js": {},
+    "./localPathSafety.js": { isConversionBackupSessionPath: async () => { checks++; return true; } },
+  });
+  const root = { scheme: "file", authority: "server", fsPath: "//server/share/storage" };
+  const session = { ...root, fsPath: "//server/share/storage/conversion-backups/session" };
+  assert.equal(await backup.isConversionBackupSession(root, session), true);
+  assert.equal(checks, 1);
+  assert.equal(await backup.isConversionBackupSession(root, { ...session, authority: "other" }), false);
+  assert.equal(await backup.isConversionBackupSession({ ...root, scheme: "vscode-userdata" }, { ...session, scheme: "vscode-userdata" }), false);
+  assert.equal(checks, 1);
+});

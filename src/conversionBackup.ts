@@ -31,7 +31,7 @@ export async function isConversionBackupSession(root: vscode.Uri, candidate: vsc
   if (root.scheme !== candidate.scheme || root.authority !== candidate.authority) {
     return false;
   }
-  if (root.authority || (root.scheme !== "file" && (root.scheme !== "vscode-userdata" || vscode.env.remoteName))) return false;
+  if (root.scheme !== "file" && (root.scheme !== "vscode-userdata" || root.authority || vscode.env.remoteName)) return false;
   return isConversionBackupSessionPath(root.fsPath, candidate.fsPath);
 }
 
