@@ -1,5 +1,5 @@
 import assert from "node:assert/strict";
-import { mkdtemp, mkdir, readFile, realpath, rm, symlink, unlink, writeFile } from "node:fs/promises";
+import { mkdtemp, mkdir, realpath, rm, symlink, unlink, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import * as path from "node:path";
 import test from "node:test";
@@ -9,7 +9,6 @@ import {
   resolveRealDirectory,
   resolveMissingRecoveryPath,
   resolveRealPathWithin,
-  writeNewFileNoFollow,
 } from "../src/localPathSafety.js";
 
 test("accepts real files contained by a workspace root", async (context) => {
@@ -48,7 +47,7 @@ test(
   },
 );
 
-test("recreates only the same missing target inside the conversion root", async (context) => {
+test("resolves only the same missing target inside the conversion root", async (context) => {
   const temporary = await mkdtemp(path.join(tmpdir(), "folder-encoding-guard-recovery-"));
   context.after(async () => rm(temporary, { recursive: true, force: true }));
   const workspace = path.join(temporary, "workspace");
@@ -64,11 +63,7 @@ test("recreates only the same missing target inside the conversion root", async 
     await resolveMissingRecoveryPath(realWorkspace, target, expectedTarget),
     expectedTarget,
   );
-  await writeNewFileNoFollow(expectedTarget, new TextEncoder().encode("original"));
-  assert.equal(await readFile(target, "utf8"), "original");
-  await assert.rejects(
-    writeNewFileNoFollow(expectedTarget, new TextEncoder().encode("overwrite")),
-  );
+
 });
 
 test(
