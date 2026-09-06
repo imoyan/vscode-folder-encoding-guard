@@ -1,3 +1,4 @@
+import { createHash } from "node:crypto";
 import { constants } from "node:fs";
 import { lstat, open } from "node:fs/promises";
 
@@ -7,6 +8,8 @@ export interface StableLocalFileRead {
   readonly bytes: Uint8Array;
   readonly size: number;
   readonly mtimeMs: number;
+  readonly ctimeMs: number;
+  readonly contentHash: string;
   readonly device: number;
   readonly inode: number;
 }
@@ -84,9 +87,13 @@ export async function readStableLocalFile(
       bytes: buffer.subarray(0, length),
       size: after.size,
       mtimeMs: after.mtimeMs,
+      ctimeMs: after.ctimeMs,
+      contentHash: createHash("sha256").update(buffer.subarray(0, length)).digest("hex"),
       device: after.dev,
       inode: after.ino,
     };
+  } catch {
+    return undefined;
   } finally {
     await handle.close();
   }
@@ -94,29 +101,28 @@ export async function readStableLocalFile(
 
 export async function localFileStillMatches(
   filePath: string,
-  expected: Pick<StableLocalFileRead, "size" | "mtimeMs" | "device" | "inode">,
+  expected: Pick<StableLocalFileRead, "size" | "mtimeMs" | "ctimeMs" | "contentHash" | "device" | "inode">,
   maxBytes: number,
 ): Promise<boolean> {
   try {
-    const current = await lstat(filePath);
-    return current.isFile() && current.size <= maxBytes && sameFileVersion(current, {
-      size: expected.size,
-      mtimeMs: expected.mtimeMs,
-      dev: expected.device,
-      ino: expected.inode,
-    });
+    const current = await readStableLocalFile(filePath, maxBytes);
+    return current !== undefined && current.size === expected.size &&
+      current.mtimeMs === expected.mtimeMs && current.ctimeMs === expected.ctimeMs &&
+      current.device === expected.device && current.inode === expected.inode &&
+      current.contentHash === expected.contentHash;
   } catch {
     return false;
   }
 }
 
 function sameFileVersion(
-  left: Pick<Awaited<ReturnType<typeof lstat>>, "size" | "mtimeMs" | "dev" | "ino">,
-  right: Pick<Awaited<ReturnType<typeof lstat>>, "size" | "mtimeMs" | "dev" | "ino">,
+  left: Pick<Awaited<ReturnType<typeof lstat>>, "size" | "mtimeMs" | "ctimeMs" | "dev" | "ino">,
+  right: Pick<Awaited<ReturnType<typeof lstat>>, "size" | "mtimeMs" | "ctimeMs" | "dev" | "ino">,
 ): boolean {
   return (
     left.size === right.size &&
     left.mtimeMs === right.mtimeMs &&
+    left.ctimeMs === right.ctimeMs &&
     left.dev === right.dev &&
     left.ino === right.ino
   );
