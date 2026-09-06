@@ -351,19 +351,21 @@ export class EncodingDecorationProvider implements vscode.FileDecorationProvider
 
   public provideFileDecoration(uri: vscode.Uri): vscode.FileDecoration | undefined {
     const fileUri = fileUriForResource(uri);
+    const folder = vscode.workspace.getWorkspaceFolder(fileUri);
+    if (!folder || !configurationFor(folder.uri).get("showExplorerBadges", true)) return undefined;
     const finding = this.findings.get(fileUri.toString());
-    if (finding?.encodingChange) {
-      return {
-        badge: "Δ",
-        color: new vscode.ThemeColor("problemsWarningIcon.foreground"),
-        tooltip: `初回基準から文字コード変更: ${encodingInfo(finding.encodingChange.from).label} → ${encodingInfo(finding.encodingChange.to).label}`,
-      };
-    }
     if (finding?.encodingIssue?.kind === "mismatch") {
       return {
         badge: "!",
         color: new vscode.ThemeColor("problemsErrorIcon.foreground"),
         tooltip: `文字コードがルールと不一致: ${finding.displayPath}`,
+      };
+    }
+    if (finding?.encodingChange) {
+      return {
+        badge: "Δ",
+        color: new vscode.ThemeColor("problemsWarningIcon.foreground"),
+        tooltip: `初回基準から文字コード変更: ${encodingInfo(finding.encodingChange.from).label} → ${encodingInfo(finding.encodingChange.to).label}`,
       };
     }
     if (finding?.encodingIssue?.kind === "ambiguous") {
@@ -395,7 +397,7 @@ export class EncodingDecorationProvider implements vscode.FileDecorationProvider
       };
     }
     const match = resolveRule(uri);
-    if (!match || !configurationFor(match.folder).get("showExplorerBadges", true)) {
+    if (!match) {
       return undefined;
     }
     const info = encodingInfo(match.rule.encoding);
