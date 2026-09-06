@@ -8,8 +8,13 @@ import { spawnSync, spawn } from "node:child_process";
 import { fileURLToPath, URL } from "node:url";
 
 const root = fileURLToPath(new URL("../", import.meta.url));
-const executable = process.env.VSCODE_EXECUTABLE ?? (process.platform === "darwin"
-  ? "/Applications/Visual Studio Code.app/Contents/MacOS/Code" : undefined);
+let executable = process.env.VSCODE_EXECUTABLE;
+if (!executable && process.platform === "darwin") {
+  for (const name of ["Code", "Electron"]) {
+    const candidate = `/Applications/Visual Studio Code.app/Contents/MacOS/${name}`;
+    try { await fs.access(candidate); executable = candidate; break; } catch { /* Try the other bundle executable name. */ }
+  }
+}
 if (!executable) throw new Error("VSCODE_EXECUTABLEにVS Code実行ファイルを指定してください。");
 await fs.access(executable);
 const temporary = await fs.mkdtemp(path.join(os.tmpdir(), "folder-encoding-host-"));
