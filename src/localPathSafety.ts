@@ -1,6 +1,5 @@
 import * as path from "node:path";
-import { constants } from "node:fs";
-import { lstat, open, realpath, stat, unlink } from "node:fs/promises";
+import { lstat, realpath, stat } from "node:fs/promises";
 
 export async function resolveRealDirectory(
   directoryPath: string,
@@ -61,29 +60,6 @@ export async function resolveMissingRecoveryPath(
     return (error as NodeJS.ErrnoException).code === "ENOENT"
       ? path.resolve(expectedResolvedPath)
       : undefined;
-  }
-}
-
-export async function writeNewFileNoFollow(
-  filePath: string,
-  bytes: Uint8Array,
-): Promise<void> {
-  const flags =
-    constants.O_WRONLY |
-    constants.O_CREAT |
-    constants.O_EXCL |
-    (constants.O_NOFOLLOW ?? 0);
-  const handle = await open(filePath, flags, 0o666);
-  let complete = false;
-  try {
-    await handle.writeFile(bytes);
-    await handle.sync();
-    complete = true;
-  } finally {
-    await handle.close();
-    if (!complete) {
-      await unlink(filePath).catch(() => undefined);
-    }
   }
 }
 
