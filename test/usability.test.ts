@@ -1,5 +1,5 @@
 import assert from "node:assert/strict";
-import { mkdtemp, mkdir, rm, stat, writeFile } from "node:fs/promises";
+import { mkdtemp, mkdir, rm, stat, writeFile, readFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import { createRequire } from "node:module";
@@ -152,6 +152,12 @@ async function harness(t: TestContext, input: Record<string, string | Uint8Array
       () => workspace.getConfiguration() as unknown as import("vscode").WorkspaceConfiguration,
       folder.uri as import("vscode").Uri),
     uri: (name: string) => Uri.file(path.join(root, name)),
+    save: async (name: string, text: string) => {
+      const document = { uri: Uri.file(path.join(root, name)), fileName: name, encoding: "utf8", version: 1, isDirty: false, getText: () => text };
+      events.get("willSave")!.fire({ document });
+      await writeFile(document.uri.fsPath, text);
+      events.get("save")!.fire(document);
+    },
     scan: () => commands.get("folderEncodingGuard.refresh")!(),
     emit: (event: string, name: string) => events.get(event)!.fire(Uri.file(path.join(root, name))),
     edit: (name: string, text: string) => {
@@ -442,4 +448,16 @@ test("Western single-byte ambiguity is never preselected for conversion", async 
   });
   await h.selection();
   assert.ok(h.shownPicks.some((pick) => pick.items.some((item) => item.label === "western.txt")));
+});
+
+
+test("legacy save enforcement warns without rewriting successive saves", async (t) => {
+  const h = await harness(t, { "a.txt": "initial" });
+  h.config.set("rules", [{ pattern: "**/*", encoding: "utf8bom" }]);
+  h.config.set("enforceOnSave", true);
+  h.config.set("warnOnSave", false);
+  await h.save("a.txt", "first");
+  await h.save("a.txt", "newest");
+  assert.equal(await readFile(h.uri("a.txt").fsPath, "utf8"), "newest");
+  assert.equal(h.messages.filter((message) => message.startsWith("保存注意:")).length, 2);
 });

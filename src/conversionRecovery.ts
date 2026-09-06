@@ -7,7 +7,7 @@ import {
   isConversionBackupSession,
   readBackupRecord,
   readBackupResource,
-  deleteIfPresent,
+  deleteStoredBackupSession,
   writeJsonAtomic,
 } from "./conversionBackup.js";
 import { isDirty, hashBytes, reopenCleanDocument } from "./conversionResources.js";
@@ -32,7 +32,7 @@ export async function restoreLastConversion(
     return false;
   }
   const sessionUri = vscode.Uri.parse(stored);
-  if (!isConversionBackupSession(context.globalStorageUri, sessionUri)) {
+  if (!(await isConversionBackupSession(context.globalStorageUri, sessionUri))) {
     void vscode.window.showErrorMessage("変換バックアップの保存場所が不正です。");
     return false;
   }
@@ -171,7 +171,7 @@ export async function restoreLastConversion(
     if (context.workspaceState.get<string>(PROTECTED_BACKUP_KEY) === stored) {
       await context.workspaceState.update(PROTECTED_BACKUP_KEY, undefined);
     }
-    await deleteIfPresent(sessionUri, true);
+    await deleteStoredBackupSession(context.globalStorageUri, sessionUri.toString());
   } else if (recordCount > 0) {
     await context.workspaceState.update(PROTECTED_BACKUP_KEY, stored);
   }

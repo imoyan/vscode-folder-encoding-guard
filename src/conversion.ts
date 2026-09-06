@@ -72,7 +72,7 @@ export class ConversionManager {
       );
       return;
     }
-    if (!isConversionBackupSession(this.context.globalStorageUri, sessionUri)) {
+    if (!(await isConversionBackupSession(this.context.globalStorageUri, sessionUri))) {
       void vscode.window.showWarningMessage(
         "前回の変換が完了していない可能性がありますが、退避データの保存場所が不正です。",
       );
@@ -206,6 +206,9 @@ export class ConversionManager {
       `${timestamp}-${randomUUID()}`,
     );
     await vscode.workspace.fs.createDirectory(sessionUri);
+    if (!(await isConversionBackupSession(this.context.globalStorageUri, sessionUri))) {
+      throw new Error("バックアップ保存先の実体を安全に確認できません。変換は開始していません。");
+    }
     let backupRegistered = false;
     let recoveryRequired = false;
     const recoveryRequiredPaths: string[] = [];
@@ -381,9 +384,9 @@ export class ConversionManager {
         PROTECTED_BACKUP_KEY,
         protectedPreviousSession,
       );
-      await deleteIfPresent(sessionUri, true);
+      await deleteStoredBackupSession(this.context.globalStorageUri, sessionUri.toString());
     } else if (disposition === "deleteUnusedNew") {
-      await deleteIfPresent(sessionUri, true);
+      await deleteStoredBackupSession(this.context.globalStorageUri, sessionUri.toString());
     }
     if (recoveryRequired) {
       await this.context.workspaceState.update(

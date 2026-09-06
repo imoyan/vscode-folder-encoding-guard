@@ -176,10 +176,11 @@
           "description": "ルール対象ファイルの保存時に文字コードの不一致を通知します。通知は保存を停止せず、回答も待ちません。"
         },
         "folderEncodingGuard.enforceOnSave": {
+          "deprecationMessage": "自動書き直しは連続保存との競合を防げないため停止しました。warnOnSaveと明示的な変換操作を使用してください。",
           "type": "boolean",
           "scope": "resource",
           "default": false,
-          "description": "高度な設定: 異なる文字コードで保存された場合、保存直前の内容を期待する文字コードで直ちに書き直します。表現できない文字がある場合は書き直しません。"
+          "description": "互換用設定。有効な場合は保存時に不一致を警告します。保存後の自動書き直しは行いません。"
         },
         "folderEncodingGuard.showExplorerBadges": {
           "type": "boolean",
