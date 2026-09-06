@@ -194,12 +194,12 @@ export async function inspectGitFiles(
         attributeLookupFailed:
           inspection?.attributeLookupFailed ?? entry.target.readCurrentAttributes,
         historyLookupFailed: headReadFailed,
-        historyIdentity: resolveGitHistoryIdentity(
+        historyIdentity: entry.historyRequested ? resolveGitHistoryIdentity(
           inspection,
           entry.target.historyRepositoryId,
           entry.target.expectedEncoding,
           head.kind === "found" ? head.commit : undefined,
-        ),
+        ) : undefined,
       });
     }
   }
