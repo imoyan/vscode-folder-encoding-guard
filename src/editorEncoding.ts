@@ -6,12 +6,6 @@ import { readStableResource, resourceStillMatchesRead } from "./stableResourceRe
 import { encodingInfo } from "./rules.js";
 import { RuleMatch, resolveRule, configurationFor } from "./workspaceRules.js";
 
-export interface PendingEncodingSave {
-  readonly text: string;
-  readonly expectedEncoding: string;
-  readonly actualEncoding: string;
-}
-
 export function isDocumentEncodingMatch(document: vscode.TextDocument, match: RuleMatch): boolean {
   return document.encoding.toLowerCase() === match.rule.encoding.toLowerCase();
 }
@@ -32,65 +26,6 @@ export function diagnosticFor(document: vscode.TextDocument): vscode.Diagnostic 
   diagnostic.source = "文字コード・改行チェック";
   diagnostic.code = "encoding-mismatch";
   return diagnostic;
-}
-
-const queuedRepairs = new Map<string, { document: vscode.TextDocument; pending: PendingEncodingSave }>();
-
-export async function repairMismatchedSave(
-  document: vscode.TextDocument,
-  pending: PendingEncodingSave,
-  repairing: Set<string>,
-): Promise<void> {
-  const key = document.uri.toString();
-  if (document.uri.scheme !== "file") return;
-  if (repairing.has(key)) {
-    queuedRepairs.set(key, { document, pending });
-    return;
-  }
-  repairing.add(key);
-  try {
-    const version = document.version;
-    const stale = (): boolean => document.isDirty || document.version !== version ||
-      document.encoding !== pending.actualEncoding || resolveRule(document.uri)?.rule.encoding !== pending.expectedEncoding;
-    const owner = vscode.workspace.getWorkspaceFolder(document.uri);
-    if (!owner) return;
-    const maxSize = configuredFileSizeLimit(configurationFor(owner.uri).get("maxFileSizeKB", 5120));
-    const saved = await readStableResource(document.uri, maxSize, stale);
-    if (!saved || await vscode.workspace.decode(saved.bytes, {encoding: pending.actualEncoding}) !== pending.text) return;
-    const encoded = await vscode.workspace.encode(pending.text, {
-      encoding: pending.expectedEncoding,
-    });
-    const roundTrip = await vscode.workspace.decode(encoded, {
-      encoding: pending.expectedEncoding,
-    });
-    if (roundTrip !== pending.text) {
-      void vscode.window.showErrorMessage(
-        `${path.basename(document.fileName)} には ${encodingInfo(pending.expectedEncoding).label} で表現できない文字があります。` +
-          `${encodingInfo(pending.actualEncoding).label} の保存結果を維持しました。`,
-      );
-      return;
-    }
-    if (!(await resourceStillMatchesRead(document.uri, maxSize, saved, stale))) return;
-    await vscode.workspace.fs.writeFile(document.uri, encoded);
-    try {
-      await vscode.workspace.openTextDocument(document.uri, {
-        encoding: pending.expectedEncoding,
-      });
-    } catch {
-      // A new edit may have made the document dirty after the save. The disk bytes are already repaired.
-    }
-    void vscode.window.showInformationMessage(
-      `${path.basename(document.fileName)} を ${encodingInfo(pending.expectedEncoding).label} で保存し直しました。`,
-    );
-  } catch (error) {
-    const message = error instanceof Error ? error.message : String(error);
-    void vscode.window.showErrorMessage(`期待する文字コードでの保存修復に失敗しました: ${message}`);
-  } finally {
-    repairing.delete(key);
-    const queued = queuedRepairs.get(key);
-    queuedRepairs.delete(key);
-    if (queued) await repairMismatchedSave(queued.document, queued.pending, repairing);
-  }
 }
 
 export async function inspectActiveFile(): Promise<void> {

@@ -25,10 +25,8 @@ import {
   notifyGitIssues,
 } from "./encodingView.js";
 import {
-  PendingEncodingSave,
   isDocumentEncodingMatch,
   diagnosticFor,
-  repairMismatchedSave,
   inspectActiveFile,
   reopenWithExpectedEncoding,
   updateStatus,
@@ -43,8 +41,6 @@ export function activate(context: vscode.ExtensionContext): void {
   const status = vscode.window.createStatusBarItem(vscode.StatusBarAlignment.Right, 90);
   status.command = "folderEncodingGuard.inspectActiveFile";
   const reopening = new Set<string>();
-  const repairing = new Set<string>();
-  const pendingSaves = new Map<string, PendingEncodingSave>();
   const warned = new Map<string, string>();
   const conversionManager = new ConversionManager(
     context,
@@ -350,27 +346,16 @@ export function activate(context: vscode.ExtensionContext): void {
     vscode.workspace.onDidCloseTextDocument((document) => {
       const key = document.uri.toString();
       warned.delete(key);
-      pendingSaves.delete(key);
       diagnostics.delete(document.uri);
     }),
     vscode.workspace.onWillSaveTextDocument((event) => {
-      const key = event.document.uri.toString();
-      pendingSaves.delete(key);
       const match = resolveRule(event.document.uri);
       if (
         match &&
-        !isDocumentEncodingMatch(event.document, match) &&
-        !repairing.has(key)
+        !isDocumentEncodingMatch(event.document, match)
       ) {
         const config = configurationFor(match.folder);
-        if (config.get("enforceOnSave", false)) {
-          pendingSaves.set(key, {
-            text: event.document.getText(),
-            expectedEncoding: match.rule.encoding,
-            actualEncoding: event.document.encoding,
-          });
-        }
-        if (config.get("warnOnSave", true)) {
+        if (config.get("warnOnSave", true) || config.get("enforceOnSave", false)) {
           void vscode.window.showErrorMessage(
             `保存注意: ${path.basename(event.document.fileName)} は ${encodingInfo(event.document.encoding).label}、` +
               `フォルダールールは ${encodingInfo(match.rule.encoding).label} です。`,
@@ -380,12 +365,6 @@ export function activate(context: vscode.ExtensionContext): void {
     }),
     vscode.workspace.onDidSaveTextDocument((document) => {
       markFilesChanged(document.uri);
-      const key = document.uri.toString();
-      const pending = pendingSaves.get(key);
-      pendingSaves.delete(key);
-      if (pending) {
-        void repairMismatchedSave(document, pending, repairing);
-      }
     }),
     vscode.workspace.onDidChangeConfiguration((event) => {
       if (event.affectsConfiguration(CONFIGURATION_SECTION)) {

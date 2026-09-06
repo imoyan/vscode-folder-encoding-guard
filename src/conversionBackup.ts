@@ -27,10 +27,11 @@ export interface BackupRecord {
   readonly targetEncoding: string;
 }
 
-export function isConversionBackupSession(root: vscode.Uri, candidate: vscode.Uri): boolean {
+export async function isConversionBackupSession(root: vscode.Uri, candidate: vscode.Uri): Promise<boolean> {
   if (root.scheme !== candidate.scheme || root.authority !== candidate.authority) {
     return false;
   }
+  if (root.authority || (root.scheme !== "file" && (root.scheme !== "vscode-userdata" || vscode.env.remoteName))) return false;
   return isConversionBackupSessionPath(root.fsPath, candidate.fsPath);
 }
 
@@ -40,7 +41,7 @@ export async function readBackupRecord(uri: vscode.Uri): Promise<BackupRecord | 
     return undefined;
   }
   let parsed: unknown;
-  try { parsed = JSON.parse(new TextDecoder().decode(raw.bytes)); } catch { return undefined; }
+  try { parsed = JSON.parse(new TextDecoder("utf-8", { fatal: true }).decode(raw.bytes)); } catch { return undefined; }
   if (typeof parsed !== "object" || parsed === null) {
     return undefined;
   }
@@ -103,7 +104,7 @@ export async function deleteStoredBackupSession(
     return;
   }
   const uri = vscode.Uri.parse(stored);
-  if (isConversionBackupSession(storageRoot, uri)) {
+  if (await isConversionBackupSession(storageRoot, uri)) {
     await deleteIfPresent(uri, true);
   }
 }

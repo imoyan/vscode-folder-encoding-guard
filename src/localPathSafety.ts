@@ -73,16 +73,29 @@ export function isPathWithin(rootPath: string, candidatePath: string): boolean {
   );
 }
 
-export function isConversionBackupSessionPath(
+export async function isConversionBackupSessionPath(
   storageRootPath: string,
   candidatePath: string,
-): boolean {
+): Promise<boolean> {
   const backupRoot = path.resolve(storageRootPath, "conversion-backups");
   const candidate = path.resolve(candidatePath);
-  return (
+  const validShape = (
     path.dirname(candidate) === backupRoot &&
     /^\d{4}-\d{2}-\d{2}T\d{2}-\d{2}-\d{2}-\d{3}Z-[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i.test(
       path.basename(candidate),
     )
   );
+  if (!validShape) return false;
+  try {
+    const realStorage = await realpath(storageRootPath);
+    const [parentStat, candidateStat, realParent, realCandidate] = await Promise.all([
+      lstat(backupRoot), lstat(candidate), realpath(backupRoot), realpath(candidate),
+    ]);
+    return parentStat.isDirectory() && !parentStat.isSymbolicLink() &&
+      candidateStat.isDirectory() && !candidateStat.isSymbolicLink() &&
+      realParent === path.join(realStorage, "conversion-backups") &&
+      path.dirname(realCandidate) === realParent;
+  } catch {
+    return false;
+  }
 }

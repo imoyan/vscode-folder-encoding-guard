@@ -94,24 +94,45 @@ test("uses path segments rather than string prefixes for containment", () => {
   assert.equal(isPathWithin("/workspace/project", "/workspace/project-copy/file.txt"), false);
 });
 
-test("accepts only direct conversion session children for recursive cleanup", () => {
-  const storage = path.join(path.sep, "storage", "extension");
+test("accepts only real direct conversion session children for recursive cleanup", async (context) => {
+  const storage = await mkdtemp(path.join(tmpdir(), "backup-containment-"));
+  context.after(() => rm(storage, { recursive: true, force: true }));
   const valid = path.join(
     storage,
     "conversion-backups",
     "2026-09-04T12-34-56-789Z-123e4567-e89b-12d3-a456-426614174000",
   );
-  assert.equal(isConversionBackupSessionPath(storage, valid), true);
+  await mkdir(valid, { recursive: true });
+  assert.equal(await isConversionBackupSessionPath(storage, valid), true);
   assert.equal(
-    isConversionBackupSessionPath(storage, path.join(storage, "conversion-backups")),
+    await isConversionBackupSessionPath(storage, path.join(storage, "conversion-backups")),
     false,
   );
   assert.equal(
-    isConversionBackupSessionPath(storage, path.join(storage, "other-data")),
+    await isConversionBackupSessionPath(storage, path.join(storage, "other-data")),
     false,
   );
   assert.equal(
-    isConversionBackupSessionPath(storage, path.join(valid, "nested")),
+    await isConversionBackupSessionPath(storage, path.join(valid, "nested")),
     false,
   );
+});
+
+
+test("rejects linked backup parents and linked sessions", { skip: process.platform === "win32" }, async (context) => {
+  const root = await mkdtemp(path.join(tmpdir(), "backup-linked-"));
+  context.after(() => rm(root, { recursive: true, force: true }));
+  const storage = path.join(root, "storage");
+  const outside = path.join(root, "outside");
+  const name = "2026-09-04T12-34-56-789Z-123e4567-e89b-12d3-a456-426614174000";
+  await mkdir(storage);
+  await mkdir(path.join(outside, name), { recursive: true });
+  const parent = path.join(storage, "conversion-backups");
+  await symlink(outside, parent, "dir");
+  assert.equal(await isConversionBackupSessionPath(storage, path.join(parent, name)), false);
+  await unlink(parent);
+  await mkdir(parent);
+  await symlink(path.join(outside, name), path.join(parent, name), "dir");
+  assert.equal(await isConversionBackupSessionPath(storage, path.join(parent, name)), false);
+  assert.ok(await realpath(path.join(outside, name)));
 });
