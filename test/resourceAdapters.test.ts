@@ -9,7 +9,7 @@ function loadModule<T>(name: string, dependencies: Record<string, unknown>): T {
   const source = readFileSync(path.join(process.cwd(), "src", name), "utf8");
   const output = ts.transpileModule(source, { compilerOptions: { module: ts.ModuleKind.CommonJS, target: ts.ScriptTarget.ES2022 } });
   const exports = {};
-  runInContext(output.outputText, createContext({ exports, require: (id: string) => {
+  runInContext(output.outputText, createContext({ exports, TextEncoder, TextDecoder, require: (id: string) => {
     if (id in dependencies) return dependencies[id];
     throw new Error(`Unexpected dependency: ${id}`);
   }}));
@@ -72,4 +72,13 @@ test("Explorer badge setting gates findings and rule mismatches outrank baseline
   assert.equal(provider.provideFileDecoration(uri)?.badge, "!");
   enabled = false;
   assert.equal(provider.provideFileDecoration(uri), undefined);
+});
+
+
+test("malformed backup JSON is ignored as an invalid record", async () => {
+  const backup = loadModule<{ readBackupRecord(uri: unknown): Promise<unknown> }>("conversionBackup.ts", {
+    "node:crypto": {}, vscode: {}, "./conversionCore.js": {}, "./localPathSafety.js": {},
+    "./stableResourceRead.js": { readStableResource: async () => ({ bytes: Buffer.from('{"version":') }) },
+  });
+  assert.equal(await backup.readBackupRecord({ scheme: "file" }), undefined);
 });
