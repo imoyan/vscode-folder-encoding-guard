@@ -162,7 +162,8 @@ export class WorkspaceEncodingScanner {
               return undefined;
             }
             const rules = this.patternsFor(folder);
-            const patterns = rules.length > 0 ? rules : ["**/*"];
+            // Enumerate with VS Code syntax, then apply the shared minimatch rule matcher.
+            const patterns = ["**/*"];
             const config = this.configurationFor(folder.uri);
             const maxFiles = config.get<number>("maxScanFiles", 5000);
             const maxSize = configuredFileSizeLimit(
@@ -203,6 +204,7 @@ export class WorkspaceEncodingScanner {
                 if (!owner || owner.uri.toString() !== folder.uri.toString()) {
                   continue;
                 }
+                if (rules.length > 0 && this.expectedEncodingFor(uri) === undefined) continue;
                 folderResources.set(uri.toString(), uri);
                 if (folderResources.size > maxFiles) {
                   void vscode.window.showErrorMessage(
