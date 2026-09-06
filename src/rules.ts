@@ -51,6 +51,19 @@ export function patternForFolder(relativePath: string): string {
   return normalized.length === 0 ? "**" : `${escape(normalized)}/**`;
 }
 
+// Existing entries are literal file paths. A trailing slash denotes a folder,
+// not a glob, so names containing [] or * are never interpreted as patterns.
+export function isMixedPathAllowed(entries: readonly string[], relativePath: string): boolean {
+  const normalizedPath = normalizeRelativePath(relativePath);
+  return entries.some((entry) => {
+    const portable = entry.replaceAll("\\", "/");
+    const folder = portable.endsWith("/");
+    const normalized = normalizeRelativePath(portable);
+    return folder ? normalized === "" || normalizedPath.startsWith(`${normalized}/`)
+      : normalized === normalizedPath;
+  });
+}
+
 export function findMatchingRule(
   rules: readonly EncodingRule[],
   relativePath: string,
