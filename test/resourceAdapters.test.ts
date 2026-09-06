@@ -82,3 +82,41 @@ test("malformed backup JSON is ignored as an invalid record", async () => {
   });
   assert.equal(await backup.readBackupRecord({ scheme: "file" }), undefined);
 });
+
+test("a partial undo write retains recovery state and can be retried", async () => {
+  const uri = (fsPath: string) => ({ fsPath, scheme: "file", toString: () => fsPath });
+  const state = new Map<string, unknown>([["last", "/storage/session"]]);
+  let record = { version: 1, originalUri: "/workspace/a.txt", relativePath: "a.txt", backupFile: "0.bin", originalHash: "original", convertedHash: "converted", sourceEncoding: "utf8", targetEncoding: "utf8bom", recoveryRequired: false };
+  let disk = "converted";
+  let writes = 0;
+  let removed = false;
+  const prompts: string[] = [];
+  const recovery = loadModule<{ restoreLastConversion(context: unknown, changed: () => void): Promise<boolean> }>("conversionRecovery.ts", {
+    vscode: { Uri: { parse: uri, file: uri, joinPath: (base: { fsPath: string }, name: string) => uri(`${base.fsPath}/${name}`) }, FileType: { File: 1 },
+      workspace: { getWorkspaceFolder: () => ({ uri: uri("/workspace") }), fs: {
+        readDirectory: async () => [["0.json", 1]], writeFile: async (_uri: unknown, bytes: Uint8Array) => {
+          assert.equal(record.recoveryRequired, true);
+          assert.equal(state.get("protected"), "/storage/session");
+          writes++;
+          if (writes === 1) { disk = "partial"; throw new Error("disk full"); }
+          disk = Buffer.from(bytes).toString();
+        },
+      } }, window: { showWarningMessage: async (message: string, _options: unknown, action: string) => { prompts.push(message); return action; }, showInformationMessage() {}, showErrorMessage() {} } },
+    "./conversionCore.js": { conversionBackupReadLimit: () => 1024 },
+    "./conversionBackup.js": { LAST_BACKUP_KEY: "last", PROTECTED_BACKUP_KEY: "protected", isConversionBackupSession: () => true,
+      readBackupRecord: async () => record, readBackupResource: async () => ({ bytes: Buffer.from("original") }),
+      writeJsonAtomic: async (_uri: unknown, value: typeof record) => { record = value; }, deleteIfPresent: async () => { removed = true; } },
+    "./conversionResources.js": { isDirty: () => false, hashBytes: (bytes: Uint8Array) => Buffer.from(bytes).toString(), reopenCleanDocument: async () => undefined },
+    "./stableResourceRead.js": { readStableResource: async () => ({ bytes: Buffer.from(disk) }), resourceStillMatchesRead: async () => true },
+    "./localPathSafety.js": { resolveRealDirectory: async (value: string) => value, resolveRealPathWithin: async (_root: string, value: string) => value },
+  });
+  const context = { globalStorageUri: uri("/storage"), workspaceState: { get: (key: string) => state.get(key), update: async (key: string, value: unknown) => { state.set(key, value); } } };
+  assert.equal(await recovery.restoreLastConversion(context, () => undefined), false);
+  assert.equal(disk, "partial");
+  assert.equal(removed, false);
+  assert.equal(await recovery.restoreLastConversion(context, () => undefined), true);
+  assert.equal(disk, "original");
+  assert.equal(removed, true);
+  assert.equal(state.get("protected"), undefined);
+  assert.ok(prompts.some((message) => message.includes("現在の内容を置き換えて")));
+});

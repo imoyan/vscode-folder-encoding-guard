@@ -8,6 +8,7 @@ import {
   readBackupRecord,
   readBackupResource,
   deleteIfPresent,
+  writeJsonAtomic,
 } from "./conversionBackup.js";
 import { isDirty, hashBytes, reopenCleanDocument } from "./conversionResources.js";
 import { readStableResource, resourceStillMatchesRead } from "./stableResourceRead.js";
@@ -125,7 +126,7 @@ export async function restoreLastConversion(
         }
         if (currentHash !== record.convertedHash && record.recoveryRequired) {
           const recovery = await vscode.window.showWarningMessage(
-            `${record.relativePath} は前回の書き込みと即時復元の両方に失敗した可能性があります。` +
+            `${record.relativePath} は前回の変換または復元の書き込みが完了していない可能性があります。` +
               "現在の内容を置き換えて、退避済みの元データを復元しますか？",
             { modal: true },
             "バックアップから復元",
@@ -140,6 +141,8 @@ export async function restoreLastConversion(
           failed += 1;
           continue;
         }
+        await context.workspaceState.update(PROTECTED_BACKUP_KEY, stored);
+        await writeJsonAtomic(vscode.Uri.joinPath(sessionUri, recordName), { ...record, recoveryRequired: true });
         if (!(await undoTargetIsCurrent(
           originalUri,
           resolvedUri,
