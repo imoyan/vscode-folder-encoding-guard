@@ -58,3 +58,18 @@ test("save repair drains the newest save after an in-flight read", async () => {
   assert.equal(reads, 2);
   assert.equal(repairing.size, 0);
 });
+
+test("Explorer badge setting gates findings and rule mismatches outrank baseline changes", () => {
+  let enabled = true;
+  const uri = { toString: () => "file:///workspace/a.txt" };
+  const view = loadModule<{ EncodingDecorationProvider: new () => { setSnapshot(value: unknown): void; provideFileDecoration(value: unknown): { badge: string } | undefined } }>("encodingView.ts", {
+    vscode: { TreeItem: class {}, ThemeColor: class {}, EventEmitter: class { event = () => undefined; fire() {} }, workspace: { getWorkspaceFolder: () => ({ uri }) } },
+    "./fileLimits.js": {}, "./rules.js": { encodingInfo: (id: string) => ({ label: id }) },
+    "./workspaceRules.js": { fileUriForResource: (value: unknown) => value, configurationFor: () => ({ get: () => enabled }) },
+  });
+  const provider = new view.EncodingDecorationProvider();
+  provider.setSnapshot({ findings: [{ uri, displayPath: "a.txt", encodingChange: { from: "utf8", to: "utf8bom" }, encodingIssue: { kind: "mismatch" } }] });
+  assert.equal(provider.provideFileDecoration(uri)?.badge, "!");
+  enabled = false;
+  assert.equal(provider.provideFileDecoration(uri), undefined);
+});
