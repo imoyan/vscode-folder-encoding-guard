@@ -124,7 +124,7 @@ async function repositoryRootMatchesGit(
       ["-C", repositoryRoot, "rev-parse", "--show-toplevel"],
       { maxOutputBytes: 16 * 1024, token },
     );
-    const reportedRoot = output.toString("utf8").trim();
+    const reportedRoot = output.toString("utf8").replace(/\n$/, "");
     if (!reportedRoot) {
       return false;
     }

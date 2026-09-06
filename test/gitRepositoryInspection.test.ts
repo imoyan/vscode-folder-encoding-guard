@@ -280,3 +280,10 @@ function gitEnvironmentWithoutCommandOverrides(): NodeJS.ProcessEnv {
 function quoteCommand(executable: string, script: string): string {
   return `${JSON.stringify(executable)} ${JSON.stringify(script)}`;
 }
+test("preserves trailing spaces in the repository root", {skip:process.platform === "win32"}, async (context) => {
+  const parent = createRepository(context);
+  const repository = path.join(parent, "trailing ");
+  mkdirSync(repository);
+  git(repository, "init");
+  assert.deepEqual(await readRepositoryHead("git", repository, neverCancelled), {kind:"unborn"});
+});
