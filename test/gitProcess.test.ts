@@ -194,3 +194,12 @@ function isProcessRunning(pid: number): boolean {
     return false;
   }
 }
+
+test("removes Windows environment overrides regardless of case", () => {
+  const env = gitEnvironment({ git_dir: "elsewhere", Git_Work_Tree: "wrong", git_allow_protocol: "all", PATH: "safe" }, "win32");
+  assert.equal(env.git_dir, undefined);
+  assert.equal(env.Git_Work_Tree, undefined);
+  assert.equal(env.git_allow_protocol, undefined);
+  assert.equal(env.GIT_ALLOW_PROTOCOL, "");
+  assert.equal(env.PATH, "safe");
+});
