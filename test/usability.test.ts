@@ -8,6 +8,7 @@ import { runInNewContext } from "node:vm";
 import test, { type TestContext } from "node:test";
 import { build } from "esbuild";
 import { minimatch } from "minimatch";
+import { patternForFolder } from "../src/rules.js";
 import { classifyLineEndings, classifyTextLineEndings } from "../src/scanCore.js";
 
 type Runtime = typeof import("../src/extension.js") & typeof import("../src/editorEncoding.js") & typeof import("../src/conversionSelection.js");
@@ -61,6 +62,9 @@ async function harness(t: TestContext, input: Record<string, string | Uint8Array
   const confirmations: string[] = [];
   const information: string[] = [];
   const shownPicks: { items: Record<string, unknown>[]; title?: string }[] = [];
+  const searchPatterns: string[] = [];
+  let treeChanges = 0;
+  let decorationChanges = 0;
   const commands = new Map<string, (...args: unknown[]) => Promise<unknown>>();
   let provider: import("../src/encodingView.js").RulesProvider | undefined;
   let decorations: import("../src/encodingView.js").EncodingDecorationProvider | undefined;
@@ -75,9 +79,9 @@ async function harness(t: TestContext, input: Record<string, string | Uint8Array
         config.set(key, value); events.get("configuration")?.fire({ affectsConfiguration: () => true });
       },
     }),
-    findFiles: async (pattern: { pattern: string }, exclude: string, limit: number) => Object.keys(input)
+    findFiles: async (pattern: { pattern: string }, exclude: string, limit: number) => { searchPatterns.push(pattern.pattern); return Object.keys(input)
       .filter((name) => minimatch(name, pattern.pattern, { dot: true }) && !minimatch(name, exclude, { dot: true }))
-      .slice(0, limit).map((name) => Uri.file(path.join(root, name))),
+      .slice(0, limit).map((name) => Uri.file(path.join(root, name))); },
     fs: { stat: async (uri: Uri) => { const s = await stat(uri.fsPath); return { type: 1, size: s.size }; } },
     decode: async (bytes: Uint8Array, options: { encoding: string }) => {
       duringDecode?.();
@@ -138,9 +142,11 @@ async function harness(t: TestContext, input: Record<string, string | Uint8Array
   const subscriptions: Array<{ dispose(): void }> = [];
   const context = { workspaceState: memento, subscriptions } as unknown as import("vscode").ExtensionContext;
   runtime.activate(context);
+  subscriptions.push(provider!.onDidChangeTreeData(() => { treeChanges++; }), decorations!.onDidChangeFileDecorations(() => { decorationChanges++; }));
   t.after(() => subscriptions.forEach((item) => item.dispose()));
   return {
-    config, state, messages, window, workspace, runtime, picks, confirmations, information, shownPicks,
+    config, state, messages, window, workspace, runtime, picks, confirmations, information, shownPicks, searchPatterns,
+    changes: () => ({ tree: treeChanges, decorations: decorationChanges }),
     command: (name: string, ...args: unknown[]) => commands.get(`folderEncodingGuard.${name}`)!(...args),
     selection: () => runtime.selectConversion(context, () => undefined,
       () => workspace.getConfiguration() as unknown as import("vscode").WorkspaceConfiguration,
@@ -288,12 +294,18 @@ test("rule editing preserves priority; moving and stale operations are guarded",
   h.config.set("rules", [{ pattern: "*.txt", encoding: "utf8" }, { pattern: "**/*", encoding: "shiftjis" }]);
   const second = h.rows().find((row) => row.label === "**/*")!;
   h.picks.push({ encoding: "utf8bom" });
+  const beforeEdit = h.changes();
   await h.command("editRule", second);
+  assert.ok(h.changes().tree > beforeEdit.tree);
+  assert.ok(h.changes().decorations > beforeEdit.decorations);
   let rules = h.config.get("rules") as { pattern: string; encoding: string }[];
   assert.equal(rules[0]?.pattern, "*.txt");
   assert.equal(rules[1]?.encoding, "utf8bom");
   const changed = h.rows().find((row) => row.label === "**/*")!;
+  const beforeMove = h.changes();
   await Promise.all([h.command("moveRuleUp", changed), h.command("moveRuleUp", changed)]);
+  assert.ok(h.changes().tree > beforeMove.tree);
+  assert.ok(h.changes().decorations > beforeMove.decorations);
   rules = h.config.get("rules") as typeof rules;
   assert.equal(rules[0]?.pattern, "**/*");
   await h.command("removeRule", second);
@@ -396,4 +408,38 @@ test("acknowledging local EOL updates only its baseline and rejects stale conten
   await h.command("acknowledgeLineEndingChange", stale);
   assert.equal(JSON.stringify(h.state.get("lineEndingBaseline.v2")), before);
   assert.ok(h.messages.some((message) => message.includes("比較基準が変わっています")));
+});
+
+
+test("escaped folder rules enumerate broadly and scan only matching files", async (t) => {
+  const h = await harness(t, { "legacy/[generated]/a.txt": "a\r\nb\n", "other.txt": "a\r\nb\n" });
+  h.config.set("rules", [{ pattern: patternForFolder("legacy/[generated]"), encoding: "utf8" }]);
+  await h.scan();
+  assert.deepEqual(h.searchPatterns, ["**/*"]);
+  assert.equal(h.badge("legacy/[generated]/a.txt")?.badge, "↵");
+  assert.equal(h.badge("other.txt"), undefined);
+});
+
+test("Western single-byte ambiguity is never preselected for conversion", async (t) => {
+  const h = await harness(t, { "western.txt": new Uint8Array([0x82]) });
+  const decode = h.workspace.decode;
+  const encode = h.workspace.encode;
+  h.workspace.decode = async (bytes, options) => {
+    if (options.encoding === "iso88591") return String.fromCharCode(...bytes);
+    if (options.encoding === "windows1252") return Array.from(bytes, (value) => value === 0x82 ? "‚" : String.fromCharCode(value)).join("");
+    return decode(bytes, options);
+  };
+  h.workspace.encode = async (text, options) => {
+    if (options.encoding === "iso88591") return Uint8Array.from(text, (char) => char.charCodeAt(0));
+    if (options.encoding === "windows1252") return Uint8Array.from(text, (char) => char === "‚" ? 0x82 : char.charCodeAt(0));
+    return encode(text, options);
+  };
+  h.picks.push({ encoding: true, eol: false }, { encoding: "utf8" }, { encoding: "iso88591" }, (items: Record<string, unknown>[]) => {
+    assert.equal(items.length, 1);
+    assert.equal(items[0]?.picked, false);
+    assert.equal(items[0]?.needsConfirmation, true);
+    return undefined;
+  });
+  await h.selection();
+  assert.ok(h.shownPicks.some((pick) => pick.items.some((item) => item.label === "western.txt")));
 });
