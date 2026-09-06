@@ -757,3 +757,17 @@ test("preserves trailing spaces in the repository root", {skip:process.platform 
   git(repository, "init");
   assert.deepEqual(await readRepositoryHead("git", repository, neverCancelled), {kind:"unborn"});
 });
+
+test("uses effective empty filter commands and overriding false requirements", gitTestOptions, async (context) => {
+  const repository = createRepository(context);
+  git(repository, "config", "--add", "filter.safe.smudge", "unavailable-command");
+  git(repository, "config", "--add", "filter.safe.smudge", "");
+  git(repository, "config", "--add", "filter.safe.required", "true");
+  git(repository, "config", "--add", "filter.safe.required", "false");
+  writeFileSync(path.join(repository, ".gitattributes"), "a.txt text eol=lf filter=safe\n");
+  writeFileSync(path.join(repository, "a.txt"), "text\n");
+  commitAll(repository);
+  const result = await inspectGitRepository("git", repository, git(repository, "rev-parse", "HEAD").trim(), [target(repository, {key:"a.txt",currentPath:"a.txt",headPath:"a.txt",expectedEncoding:"utf8",maxSize:1024,readCurrentAttributes:true})], neverCancelled);
+  assert.equal(result.get("a.txt")?.attributeLookupFailed, false);
+  assert.equal(result.get("a.txt")?.head.kind, "found");
+});
