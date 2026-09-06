@@ -210,7 +210,8 @@ export async function selectConversion(
           const classification = await classifyEncoding(original, sourceEncoding, {
             decode: async (bytes, encoding) => vscode.workspace.decode(bytes, { encoding }),
             encode: async (text, encoding) => vscode.workspace.encode(text, { encoding }),
-          }, { isCancellationRequested: () => token.isCancellationRequested });
+          }, { isCancellationRequested: () => token.isCancellationRequested,
+            alternativeEncodings: ENCODINGS.map((encoding) => encoding.id).filter((encoding) => encoding !== sourceEncoding) });
           const needsConfirmation = classification.kind !== "match" && classification.kind !== "ascii";
           const beforeEol = classifyLineEndings(original, sourceEncoding);
           const eolLabel = beforeEol.kind === "mixed"
