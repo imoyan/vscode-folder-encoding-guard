@@ -48,3 +48,10 @@ test("mixed allowances distinguish literal files and folder boundaries", () => {
   assert.equal(isMixedPathAllowed(["[test]/"], "t/a.txt"), false);
   assert.equal(isMixedPathAllowed(["./"], "a.txt"), true);
 });
+
+test("normalizes Windows mixed-allowance paths while preserving folder intent", () => {
+  assert.equal(isMixedPathAllowed(["legacy\\"], "legacy\\nested\\a.txt"), true);
+  assert.equal(isMixedPathAllowed(["legacy\\"], "legacy-other\\a.txt"), false);
+  assert.equal(isMixedPathAllowed(["a.txt"], "a.txt\\child"), false);
+  assert.equal(isMixedPathAllowed([".\\"], "nested\\a.txt"), true);
+});

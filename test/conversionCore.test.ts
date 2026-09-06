@@ -424,3 +424,29 @@ test("conversion assessment distinguishes unchanged, binary, source and target f
   if (result.kind === "ready") assert.equal(new TextDecoder().decode(result.prepared.converted), "café");
   await assert.rejects(prepareEncodingConversion(new Uint8Array([0xff]), "utf8", "latin1", codec));
 });
+
+test("rechecks after registration and the start marker without recovering untouched targets", async () => {
+  for (const failure of ["register-change", "marker-change", "marker-error"]) {
+    let current = true;
+    let writes = 0;
+    let recoveries = 0;
+    let cleaned = false;
+    const operation = writeConversionIfCurrent({
+      writeBackup: async () => {}, writeRecord: async () => {},
+      isCurrent: async () => current,
+      registerBackup: async () => { if (failure === "register-change") current = false; },
+      markTargetStarted: async () => {
+        if (failure === "marker-change") current = false;
+        if (failure === "marker-error") throw new Error("marker failed");
+      },
+      writeTarget: async () => { writes++; },
+      recoverTarget: async () => { recoveries++; },
+      cleanupBackup: async () => { cleaned = true; },
+    });
+    if (failure === "marker-error") await assert.rejects(operation, /marker failed/);
+    else assert.equal(await operation, false);
+    assert.equal(writes, 0);
+    assert.equal(recoveries, 0);
+    assert.equal(cleaned, true);
+  }
+});

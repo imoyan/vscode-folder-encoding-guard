@@ -150,6 +150,7 @@ export async function runCommand(
 
 export function gitEnvironment(
   source: NodeJS.ProcessEnv = process.env,
+  platform: NodeJS.Platform = process.platform,
 ): NodeJS.ProcessEnv {
   const environment: NodeJS.ProcessEnv = {
     ...source,
@@ -159,7 +160,7 @@ export function gitEnvironment(
     GIT_OPTIONAL_LOCKS: "0",
     GIT_TERMINAL_PROMPT: "0",
   };
-  for (const key of [
+  const removed = new Set([
     "GIT_ALTERNATE_OBJECT_DIRECTORIES",
     "GIT_ATTR_SOURCE",
     "GIT_COMMON_DIR",
@@ -174,8 +175,11 @@ export function gitEnvironment(
     "GIT_NOGLOB_PATHSPECS",
     "GIT_OBJECT_DIRECTORY",
     "GIT_WORK_TREE",
-  ]) {
-    delete environment[key];
+  ]);
+  const enforced = new Set(["GIT_ALLOW_PROTOCOL", "GIT_NO_LAZY_FETCH", "GIT_NO_REPLACE_OBJECTS", "GIT_OPTIONAL_LOCKS", "GIT_TERMINAL_PROMPT"]);
+  for (const key of Object.keys(environment)) {
+    const normalized = platform === "win32" ? key.toUpperCase() : key;
+    if (removed.has(normalized) || (key !== normalized && enforced.has(normalized))) delete environment[key];
   }
   return environment;
 }

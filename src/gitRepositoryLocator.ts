@@ -1,12 +1,16 @@
-import { lstat } from "node:fs/promises";
+import { lstat, realpath } from "node:fs/promises";
 import * as path from "node:path";
 
 export class GitRepositoryLocator {
   private readonly rootsByDirectory = new Map<string, string | undefined>();
 
+  /** Call before a new inspection when repository markers may have changed. */
+  public clear(): void { this.rootsByDirectory.clear(); }
+
   public async findNearestRoot(startDirectory: string): Promise<string | undefined> {
     const visited: string[] = [];
-    let directory = path.resolve(startDirectory);
+    let directory: string;
+    try { directory = await realpath(startDirectory); } catch { return undefined; }
     while (true) {
       if (this.rootsByDirectory.has(directory)) {
         return this.remember(visited, this.rootsByDirectory.get(directory));
