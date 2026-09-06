@@ -312,3 +312,19 @@ test("detects line ending changes only after a baseline exists", () => {
     undefined,
   );
 });
+
+test("does not invent UTF-16 alternatives for Japanese legacy bytes", async () => {
+  const bytes = new Uint8Array([0x93, 0xfa, 0x96, 0x7b, 0x8c, 0xea]);
+  const legacyCodec: EncodingCodec = {
+    decode: async (data, encoding) => encoding === "shiftjis" ? "日本語" : codec.decode(data, encoding),
+    encode: async (text, encoding) => encoding === "shiftjis" ? bytes : codec.encode(text, encoding),
+  };
+  assert.deepEqual(await classifyEncoding(bytes, "shiftjis", legacyCodec, { alternativeEncodings: ["utf16le", "utf16be"] }),
+    { kind: "match", detectedEncoding: "shiftjis" });
+});
+test("skips ASCII control streams and withholds their line endings", async () => {
+  const bytes = new Uint8Array([1, 2, 3, 10]);
+  const result = await classifyEncoding(bytes, "utf8", codec);
+  assert.equal(result.kind, "skip");
+  assert.equal(classifyConsistentLineEndings(bytes, result, "utf8"), undefined);
+});

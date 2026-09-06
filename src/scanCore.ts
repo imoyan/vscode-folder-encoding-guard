@@ -69,7 +69,9 @@ export async function classifyEncoding(
   codec: EncodingCodec,
   options: EncodingClassificationOptions = {},
 ): Promise<EncodingClassification> {
-  const alternativeEncodings = options.alternativeEncodings ?? FALLBACK_CANDIDATES;
+  const utf16Signal = detectBom(bytes) ?? detectLikelyUtf16(bytes);
+  const hasEvidence = (encoding: string): boolean => !isUtf16Encoding(encoding) || encoding === utf16Signal;
+  const alternativeEncodings = (options.alternativeEncodings ?? FALLBACK_CANDIDATES).filter(hasEvidence);
   const isCancellationRequested = options.isCancellationRequested ?? (() => false);
   throwIfClassificationCancelled(isCancellationRequested);
   const bomEncoding = detectBom(bytes);
@@ -97,6 +99,7 @@ export async function classifyEncoding(
   }
 
   if (isAscii(bytes) && !isUtf16Encoding(expectedEncoding)) {
+    if (looksLikeBinary(new TextDecoder("ascii").decode(bytes.subarray(0, 8192)))) return { kind: "skip" };
     return ASCII_COMPATIBLE_ENCODINGS.has(expectedEncoding)
       ? { kind: "ascii" }
       : { kind: "mismatch", detectedEncoding: "utf8" };
@@ -157,7 +160,7 @@ export async function classifyEncoding(
       : { kind: "ambiguous", candidates: [expectedEncoding, ...alternatives] };
   }
   const candidates: string[] = [];
-  for (const encoding of unique([...alternativeEncodings, ...FALLBACK_CANDIDATES])) {
+  for (const encoding of unique([...alternativeEncodings, ...FALLBACK_CANDIDATES.filter(hasEvidence)])) {
     throwIfClassificationCancelled(isCancellationRequested);
     if (encoding === expectedEncoding) {
       continue;
@@ -262,6 +265,7 @@ export function classifyConsistentLineEndings(
   classification: EncodingClassification,
   expectedEncoding: string,
 ): LineEndingClassification | undefined {
+  if (classification.kind === "skip") return undefined;
   const encodings = classification.kind === "ambiguous"
     ? classification.candidates
     : [classification.detectedEncoding ?? expectedEncoding];

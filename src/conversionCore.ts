@@ -147,11 +147,23 @@ export async function writeConversionIfCurrent(
     await steps.cleanupBackup();
     throw error;
   }
+  let targetWriteAttempted = false;
   try {
     await steps.markTargetStarted?.();
+    if (!(await steps.isCurrent())) {
+      await steps.markTargetCompleted?.();
+      await steps.cleanupBackup();
+      return false;
+    }
+    targetWriteAttempted = true;
     await steps.writeTarget();
     await steps.markTargetCompleted?.();
   } catch (error) {
+    if (!targetWriteAttempted) {
+      await steps.markTargetCompleted?.();
+      await steps.cleanupBackup();
+      throw error;
+    }
     let recoveryFailed = false;
     try {
       await steps.recoverTarget();
