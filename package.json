@@ -1,0 +1,22 @@
+{
+  "name": "folder-encoding-guard",
+  "version": "0.0.0",
+  "private": true,
+  "description": "文字コードルールの判定を段階的にレビューする開発版",
+  "license": "MIT",
+  "type": "module",
+  "engines": {
+    "node": ">=22"
+  },
+  "scripts": {
+    "check": "tsc --noEmit",
+    "test": "tsc && node --test dist/test/*.test.js"
+  },
+  "dependencies": {
+    "minimatch": "10.2.6"
+  },
+  "devDependencies": {
+    "typescript": "5.9.3",
+    "@types/node": "24.13.3"
+  }
+}
