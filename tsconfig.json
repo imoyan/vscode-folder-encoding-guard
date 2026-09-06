@@ -6,14 +6,17 @@
     "strict": true,
     "noUncheckedIndexedAccess": true,
     "noImplicitOverride": true,
-    "outDir": "dist",
-    "rootDir": ".",
+    "esModuleInterop": true,
+    "skipLibCheck": true,
     "types": [
-      "node"
+      "node",
+      "vscode"
     ]
   },
   "include": [
     "src/**/*.ts",
-    "test/**/*.ts"
+    "test/**/*.ts",
+    "tools/**/*.ts",
+    "tools/**/*.mts"
   ]
 }

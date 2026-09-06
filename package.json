@@ -1,23 +1,352 @@
 {
   "name": "folder-encoding-guard",
-  "version": "0.0.0",
-  "private": true,
-  "description": "文字コードルールの判定を段階的にレビューする開発版",
+  "displayName": "文字コード・改行チェック",
+  "description": "フォルダーごとの文字コードルールを設定し、文字コード・改行の不一致や変更を確認。選択したファイルをまとめて変換できます。",
+  "version": "0.9.0",
+  "publisher": "yusuke-local",
   "license": "MIT",
-  "type": "module",
-  "engines": {
-    "node": ">=22"
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/imoyan/vscode-folder-encoding-guard.git"
   },
+  "engines": {
+    "vscode": "^1.100.0"
+  },
+  "capabilities": {
+    "virtualWorkspaces": {
+      "supported": false,
+      "description": "安全な上限付き読み込みのため、ローカルファイルのワークスペースで動作します。"
+    }
+  },
+  "categories": [
+    "Other"
+  ],
+  "activationEvents": [
+    "onStartupFinished"
+  ],
+  "main": "./dist/extension.js",
   "scripts": {
-    "check": "tsc --noEmit",
-    "test": "node -e \"require('node:fs').rmSync('dist', {recursive:true,force:true})\" && tsc && node --test dist/test/*.test.js"
+    "build": "node esbuild.mjs",
+    "watch": "node esbuild.mjs --watch",
+    "check": "tsc --noEmit && eslint src test && npm test",
+    "test": "tsx --test test/**/*.test.ts",
+    "package": "npm run check && npm run package:vsix",
+    "package:vsix": "npm run build && vsce package --no-dependencies"
   },
   "dependencies": {
     "minimatch": "10.2.6"
   },
   "devDependencies": {
+    "@eslint/js": "9.39.5",
     "@types/node": "24.13.3",
     "@types/vscode": "1.100.0",
-    "typescript": "5.9.3"
+    "@vscode/vsce": "3.9.2",
+    "esbuild": "0.25.12",
+    "eslint": "9.39.5",
+    "tsx": "4.23.13",
+    "typescript": "5.9.3",
+    "typescript-eslint": "8.69.0"
+  },
+  "contributes": {
+    "commands": [
+      {
+        "command": "folderEncodingGuard.configureFolder",
+        "title": "文字コード・改行チェック: このフォルダーの文字コードを設定",
+        "icon": "$(settings-gear)"
+      },
+      {
+        "command": "folderEncodingGuard.inspectActiveFile",
+        "title": "文字コード・改行チェック: 現在のファイルを確認",
+        "icon": "$(pass)"
+      },
+      {
+        "command": "folderEncodingGuard.convertFolder",
+        "title": "文字コード・改行チェック: このフォルダー内の既存ファイルを変換",
+        "icon": "$(replace-all)"
+      },
+      {
+        "command": "folderEncodingGuard.undoLastConversion",
+        "title": "文字コード・改行チェック: 直前の一括変換を元に戻す",
+        "icon": "$(discard)"
+      },
+      {
+        "command": "folderEncodingGuard.convertFindingFolder",
+        "title": "文字コード・改行チェック: この要注意ファイルのフォルダーを変換",
+        "icon": "$(replace-all)"
+      },
+      {
+        "command": "folderEncodingGuard.allowMixedLineEndings",
+        "title": "文字コード・改行チェック: この改行混在を許容",
+        "icon": "$(pass)"
+      },
+      {
+        "command": "folderEncodingGuard.removeRule",
+        "title": "文字コード・改行チェック: ルールを削除",
+        "icon": "$(trash)"
+      },
+      {
+        "command": "folderEncodingGuard.refresh",
+        "title": "文字コード・改行チェック: 文字コードと改行コードをスキャンして更新",
+        "icon": "$(refresh)"
+      },
+      {
+        "command": "folderEncodingGuard.acknowledgeEncodingChange",
+        "title": "文字コード・改行チェック: この文字コード変更を確認済みにする",
+        "icon": "$(check)"
+      },
+      {
+        "command": "folderEncodingGuard.removeMixedAllowance",
+        "title": "文字コード・改行チェック: この混在許容を解除",
+        "icon": "$(trash)"
+      },
+      {
+        "command": "folderEncodingGuard.editRule",
+        "title": "文字コード・改行チェック: ルールの文字コードを変更",
+        "icon": "$(edit)"
+      },
+      {
+        "command": "folderEncodingGuard.moveRuleUp",
+        "title": "文字コード・改行チェック: ルールの優先順位を上げる",
+        "icon": "$(arrow-up)"
+      },
+      {
+        "command": "folderEncodingGuard.moveRuleDown",
+        "title": "文字コード・改行チェック: ルールの優先順位を下げる",
+        "icon": "$(arrow-down)"
+      },
+      {
+        "command": "folderEncodingGuard.acknowledgeLineEndingChange",
+        "title": "文字コード・改行チェック: この改行変更を確認済みにする",
+        "icon": "$(check)"
+      }
+    ],
+    "configuration": {
+      "title": "文字コード・改行チェック",
+      "properties": {
+        "folderEncodingGuard.rules": {
+          "type": "array",
+          "scope": "resource",
+          "default": [],
+          "markdownDescription": "ワークスペースフォルダーからの相対パス glob と期待する文字コードです。上から順に評価し、最初に一致したルールを使用します。",
+          "items": {
+            "type": "object",
+            "required": [
+              "pattern",
+              "encoding"
+            ],
+            "additionalProperties": false,
+            "properties": {
+              "pattern": {
+                "type": "string",
+                "description": "ワークスペースフォルダーからの相対 glob。例: legacy/**"
+              },
+              "encoding": {
+                "type": "string",
+                "enum": [
+                  "utf8",
+                  "utf8bom",
+                  "shiftjis",
+                  "eucjp",
+                  "windows1252",
+                  "iso88591",
+                  "utf16le",
+                  "utf16be"
+                ]
+              }
+            }
+          }
+        },
+        "folderEncodingGuard.warnOnOpen": {
+          "type": "boolean",
+          "scope": "resource",
+          "default": true,
+          "description": "ルール対象ファイルを異なる文字コードで開いた可能性がある場合に警告します。"
+        },
+        "folderEncodingGuard.autoReopen": {
+          "type": "boolean",
+          "scope": "resource",
+          "default": false,
+          "description": "高度な設定: 未編集のルール対象ファイルを、期待する文字コードで自動的に開き直します。"
+        },
+        "folderEncodingGuard.warnOnSave": {
+          "type": "boolean",
+          "scope": "resource",
+          "default": true,
+          "description": "ルール対象ファイルの保存時に文字コードの不一致を通知します。通知は保存を停止せず、回答も待ちません。"
+        },
+        "folderEncodingGuard.enforceOnSave": {
+          "type": "boolean",
+          "scope": "resource",
+          "default": false,
+          "description": "高度な設定: 異なる文字コードで保存された場合、保存直前の内容を期待する文字コードで直ちに書き直します。表現できない文字がある場合は書き直しません。"
+        },
+        "folderEncodingGuard.showExplorerBadges": {
+          "type": "boolean",
+          "scope": "resource",
+          "default": true,
+          "description": "ルール対象のファイルをエクスプローラーで文字コードのバッジ付き表示にします。"
+        },
+        "folderEncodingGuard.useGitAttributes": {
+          "type": "boolean",
+          "scope": "resource",
+          "default": true,
+          "markdownDescription": "Gitが認識する `.gitattributes` の `eol=lf` / `eol=crlf` を確認し、現在の改行コードと異なる場合に注意表示します。オフでもHEADとの改行比較は継続します。Gitリモートへの接続は行いません。"
+        },
+        "folderEncodingGuard.allowedMixedLineEndings": {
+          "type": "array",
+          "scope": "resource",
+          "default": [],
+          "uniqueItems": true,
+          "items": {
+            "type": "string"
+          },
+          "markdownDescription": "意図的な改行混在を許容する相対パス。ファイルは `legacy/a.txt`、フォルダー以下は末尾に `/` を付けて `legacy/`（ワークスペース全体は `./`）。globではありません。文字コードや改行変更、`.gitattributes` 不一致の警告は抑制しません。"
+        },
+        "folderEncodingGuard.conversionExclude": {
+          "type": "string",
+          "scope": "resource",
+          "default": "**/{.git,.hg,.svn,.vscode,.idea,node_modules,.next,dist,build,.dart_tool}/**",
+          "description": "文字コードのスキャンと既存ファイルの一括変換で除外する glob です。"
+        },
+        "folderEncodingGuard.maxScanFiles": {
+          "type": "integer",
+          "scope": "resource",
+          "default": 5000,
+          "minimum": 1,
+          "maximum": 50000,
+          "description": "文字コードのスキャンと一括変換で走査するファイル数の上限です。"
+        },
+        "folderEncodingGuard.maxFileSizeKB": {
+          "type": "integer",
+          "scope": "resource",
+          "default": 5120,
+          "minimum": 1,
+          "maximum": 32768,
+          "description": "文字コードのスキャンと一括変換の対象にする1ファイルあたりの最大サイズ（KiB、最大32 MiB）です。"
+        }
+      }
+    },
+    "views": {
+      "explorer": [
+        {
+          "id": "folderEncodingGuard.rulesView",
+          "name": "文字コード・改行の状況",
+          "when": "workspaceFolderCount > 0"
+        }
+      ]
+    },
+    "menus": {
+      "explorer/context": [
+        {
+          "command": "folderEncodingGuard.configureFolder",
+          "when": "resourceScheme == file && explorerResourceIsFolder",
+          "group": "7_modification@50"
+        },
+        {
+          "command": "folderEncodingGuard.convertFolder",
+          "when": "resourceScheme == file && explorerResourceIsFolder",
+          "group": "7_modification@51"
+        }
+      ],
+      "editor/title/context": [
+        {
+          "command": "folderEncodingGuard.inspectActiveFile",
+          "when": "resourceScheme == file",
+          "group": "3_preview@50"
+        }
+      ],
+      "view/title": [
+        {
+          "command": "folderEncodingGuard.refresh",
+          "when": "view == folderEncodingGuard.rulesView && !folderEncodingGuard.scanning",
+          "group": "navigation"
+        }
+      ],
+      "view/item/context": [
+        {
+          "command": "folderEncodingGuard.removeRule",
+          "when": "view == folderEncodingGuard.rulesView && viewItem == encodingRule",
+          "group": "inline"
+        },
+        {
+          "command": "folderEncodingGuard.convertFindingFolder",
+          "when": "view == folderEncodingGuard.rulesView && viewItem =~ /^(encodingFinding|encodingMixedFinding|mixedLineEndingFinding|lineEndingFinding)(WithLocalEol)?(WithChange)?$/",
+          "group": "inline"
+        },
+        {
+          "command": "folderEncodingGuard.allowMixedLineEndings",
+          "when": "view == folderEncodingGuard.rulesView && viewItem =~ /^(mixedLineEndingFinding|encodingMixedFinding)(WithLocalEol)?(WithChange)?$/",
+          "group": "inline@2"
+        },
+        {
+          "command": "folderEncodingGuard.acknowledgeEncodingChange",
+          "when": "view == folderEncodingGuard.rulesView && viewItem =~ /WithChange$/",
+          "group": "navigation@3"
+        },
+        {
+          "command": "folderEncodingGuard.removeMixedAllowance",
+          "when": "view == folderEncodingGuard.rulesView && viewItem == mixedAllowance",
+          "group": "navigation"
+        },
+        {
+          "command": "folderEncodingGuard.editRule",
+          "when": "view == folderEncodingGuard.rulesView && viewItem == encodingRule",
+          "group": "rule_edit"
+        },
+        {
+          "command": "folderEncodingGuard.moveRuleUp",
+          "when": "view == folderEncodingGuard.rulesView && viewItem == encodingRule",
+          "group": "rule_edit"
+        },
+        {
+          "command": "folderEncodingGuard.moveRuleDown",
+          "when": "view == folderEncodingGuard.rulesView && viewItem == encodingRule",
+          "group": "rule_edit"
+        },
+        {
+          "command": "folderEncodingGuard.acknowledgeLineEndingChange",
+          "when": "view == folderEncodingGuard.rulesView && viewItem =~ /WithLocalEol/",
+          "group": "navigation@4"
+        }
+      ],
+      "commandPalette": [
+        {
+          "command": "folderEncodingGuard.convertFindingFolder",
+          "when": "false"
+        },
+        {
+          "command": "folderEncodingGuard.allowMixedLineEndings",
+          "when": "false"
+        },
+        {
+          "command": "folderEncodingGuard.acknowledgeEncodingChange",
+          "when": "false"
+        },
+        {
+          "command": "folderEncodingGuard.removeMixedAllowance",
+          "when": "false"
+        },
+        {
+          "command": "folderEncodingGuard.editRule",
+          "when": "false"
+        },
+        {
+          "command": "folderEncodingGuard.moveRuleUp",
+          "when": "false"
+        },
+        {
+          "command": "folderEncodingGuard.moveRuleDown",
+          "when": "false"
+        },
+        {
+          "command": "folderEncodingGuard.acknowledgeLineEndingChange",
+          "when": "false"
+        }
+      ]
+    }
+  },
+  "private": true,
+  "bugs": {
+    "url": "https://github.com/imoyan/vscode-folder-encoding-guard/issues"
   }
 }
