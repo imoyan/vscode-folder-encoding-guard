@@ -39,7 +39,8 @@ export async function readBackupRecord(uri: vscode.Uri): Promise<BackupRecord | 
   if (!raw) {
     return undefined;
   }
-  const parsed: unknown = JSON.parse(new TextDecoder().decode(raw.bytes));
+  let parsed: unknown;
+  try { parsed = JSON.parse(new TextDecoder().decode(raw.bytes)); } catch { return undefined; }
   if (typeof parsed !== "object" || parsed === null) {
     return undefined;
   }

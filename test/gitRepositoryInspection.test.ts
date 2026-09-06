@@ -742,6 +742,7 @@ test("fails safely for ambiguous set and unset attribute values", gitTestOptions
 
 test("invalidates a cached HEAD baseline when checkout policy or HEAD path changes", gitTestOptions, async (context) => {
   const repository = createRepository(context);
+  git(repository, "config", "core.eol", "lf");
   writeFileSync(path.join(repository, ".gitattributes"), "*.txt text=auto\n");
   writeFileSync(path.join(repository, "first.txt"), "one\ntwo\n");
   writeFileSync(path.join(repository, "second.txt"), "three\nfour\n");
@@ -1289,3 +1290,24 @@ function gitEnvironmentWithoutCommandOverrides(): NodeJS.ProcessEnv {
 function quoteCommand(executable: string, script: string): string {
   return `${JSON.stringify(executable)} ${JSON.stringify(script)}`;
 }
+test("preserves trailing spaces in the repository root", {skip:process.platform === "win32"}, async (context) => {
+  const parent = createRepository(context);
+  const repository = path.join(parent, "trailing ");
+  mkdirSync(repository);
+  git(repository, "init");
+  assert.deepEqual(await readRepositoryHead("git", repository, neverCancelled), {kind:"unborn"});
+});
+
+test("uses effective empty filter commands and overriding false requirements", gitTestOptions, async (context) => {
+  const repository = createRepository(context);
+  git(repository, "config", "--add", "filter.safe.smudge", "unavailable-command");
+  git(repository, "config", "--add", "filter.safe.smudge", "");
+  git(repository, "config", "--add", "filter.safe.required", "true");
+  git(repository, "config", "--add", "filter.safe.required", "false");
+  writeFileSync(path.join(repository, ".gitattributes"), "a.txt text eol=lf filter=safe\n");
+  writeFileSync(path.join(repository, "a.txt"), "text\n");
+  commitAll(repository);
+  const result = await inspectGitRepository("git", repository, git(repository, "rev-parse", "HEAD").trim(), [target(repository, {key:"a.txt",currentPath:"a.txt",headPath:"a.txt",expectedEncoding:"utf8",maxSize:1024,readCurrentAttributes:true})], neverCancelled);
+  assert.equal(result.get("a.txt")?.attributeLookupFailed, false);
+  assert.equal(result.get("a.txt")?.head.kind, "found");
+});
