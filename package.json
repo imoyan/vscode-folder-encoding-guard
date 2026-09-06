@@ -28,10 +28,11 @@
   "scripts": {
     "build": "node esbuild.mjs",
     "watch": "node esbuild.mjs --watch",
-    "check": "tsc --noEmit && eslint src test && npm test",
+    "check": "tsc --noEmit && eslint src test tools && npm test",
     "test": "tsx --test test/**/*.test.ts",
     "package": "npm run check && npm run package:vsix",
-    "package:vsix": "npm run build && vsce package --no-dependencies"
+    "package:vsix": "npm run build && vsce package --no-dependencies",
+    "test:host": "node tools/testExtensionHost.mjs"
   },
   "dependencies": {
     "minimatch": "10.2.6"
