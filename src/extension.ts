@@ -1,3 +1,4 @@
+import { configureMixedPolicy, readMixedPolicy, writeMixedPolicy } from "./mixedPolicy.js";
 import { scopeContains, selectScanScope, type ScanScope } from "./scanScope.js";
 import * as path from "node:path";
 import * as vscode from "vscode";
@@ -9,10 +10,8 @@ import { encodingInfo } from "./rules.js";
 import { WorkspaceEncodingScanner } from "./scanner.js";
 import {
   CONFIGURATION_SECTION,
-  ALLOWED_MIXED_LINE_ENDINGS_SETTING,
   configurationFor,
   getRules,
-  getAllowedMixedLineEndings,
   relativePathFor,
   isMixedLineEndingAllowed,
   resolveRule,
@@ -150,7 +149,8 @@ export function activate(context: vscode.ExtensionContext): void {
     const attributesChanged = path.basename(uri.fsPath) === ".gitattributes";
     const selected = scanScope && scopeContains(scanScope, uri);
     if (scanScope && !selected && !attributesChanged) return;
-    if (!scanScope && !attributesChanged && minimatch(relativePath, exclude, { dot: true })) return;
+    const explicitFile = scanScope?.targets.some((target) => !target.directory && target.uri.toString() === uri.toString());
+    if (!explicitFile && !attributesChanged && minimatch(relativePath, exclude, { dot: true })) return;
     if (selected || structural || attributesChanged || getRules(folder).length === 0 || resolveRule(uri)) {
       fileChangeRevision += 1;
       invalidateScan(true);
@@ -234,6 +234,7 @@ export function activate(context: vscode.ExtensionContext): void {
         settingsQueue,
       ),
     ),
+    vscode.commands.registerCommand("folderEncodingGuard.configureMixedPolicy", (uri?: vscode.Uri) => configureMixedPolicy(uri, settingsQueue)),
     vscode.commands.registerCommand("folderEncodingGuard.configureFile", (uri?: vscode.Uri) => configureFolder(uri, rulesProvider, decorationProvider, settingsQueue, true)),
     vscode.commands.registerCommand("folderEncodingGuard.scanSelection", async (uri?: vscode.Uri, selected?: readonly vscode.Uri[]) => {
       if (choosingScope || scanCancellation) return;
@@ -290,17 +291,12 @@ export function activate(context: vscode.ExtensionContext): void {
           const filePath = relativePathFor(item.finding.uri, folder);
           const parent = path.posix.dirname(filePath);
           const relativePath = scope.folder ? `${parent}/` : filePath;
+          let previous: boolean | undefined;
           const added = await settingsQueue.run(async () => {
-            const allowed = getAllowedMixedLineEndings(folder);
-            if (!allowed.includes(relativePath)) {
-              await configurationFor(folder.uri).update(
-                ALLOWED_MIXED_LINE_ENDINGS_SETTING,
-                [...allowed, relativePath].sort(),
-                vscode.ConfigurationTarget.WorkspaceFolder,
-              );
-              return true;
-            }
-            return false;
+            previous = readMixedPolicy(folder, relativePath);
+            if (previous === true) return false;
+            await writeMixedPolicy(folder, relativePath, true);
+            return true;
           });
           if (!added) return;
           invalidateScan();
@@ -309,11 +305,9 @@ export function activate(context: vscode.ExtensionContext): void {
             "元に戻す",
           );
           if (selected === "元に戻す") {
-            await settingsQueue.run(async () => configurationFor(folder.uri).update(
-              ALLOWED_MIXED_LINE_ENDINGS_SETTING,
-              getAllowedMixedLineEndings(folder).filter((entry) => entry !== relativePath),
-              vscode.ConfigurationTarget.WorkspaceFolder,
-            ));
+            await settingsQueue.run(async () => {
+              if (readMixedPolicy(folder, relativePath) === true) await writeMixedPolicy(folder, relativePath, previous);
+            });
             invalidateScan();
           }
         } finally {

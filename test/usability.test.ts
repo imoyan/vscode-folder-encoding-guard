@@ -511,3 +511,45 @@ test("cancelling the scope picker does not start a whole-workspace scan", async 
   await h.command("scanSelection");
   assert.deepEqual(h.searchPatterns, []);
 });
+
+
+test("mixed-ending choices support a denied file inside an allowed folder and inheritance", async (t) => {
+  const h = await harness(t, { "data/a.csv": "a\r\nb\n", "data/b.csv": "a\r\nb\n" });
+  h.picks.push({ label: "許容する", allow: true });
+  await h.command("configureMixedPolicy", h.uri("data"));
+  await h.scan();
+  assert.equal(h.badge("data/a.csv"), undefined);
+  h.picks.push({ label: "許容しない", allow: false });
+  await h.command("configureMixedPolicy", h.uri("data/a.csv"));
+  await h.scan();
+  assert.equal(h.badge("data/a.csv")?.badge, "↵");
+  assert.equal(h.badge("data/b.csv"), undefined);
+  const denied = h.rows().find((row) => row.label === "data/a.csv" && String(row.description).startsWith("許容しない"));
+  assert.ok(denied);
+  const finding = h.rows().find((row) => row.contextValue === "mixedLineEndingFinding");
+  h.picks.push({ folder: false });
+  h.information.push("元に戻す");
+  await h.command("allowMixedLineEndings", finding);
+  await h.scan();
+  assert.equal(h.badge("data/a.csv")?.badge, "↵");
+  await h.command("removeMixedAllowance", denied);
+  assert.equal(h.badge("data/a.csv"), undefined);
+  assert.equal(await readFile(h.uri("data/a.csv").fsPath, "utf8"), "a\r\nb\n");
+  h.picks.push(undefined);
+  const before = JSON.stringify([...h.config]);
+  await h.command("configureMixedPolicy", h.uri("data/a.csv"));
+  assert.equal(JSON.stringify([...h.config]), before);
+});
+
+
+test("folder-scoped scans ignore excluded changes while direct file scopes observe them", async (t) => {
+  const h = await harness(t, { "part/a.txt": "a\r\nb\n", "part/node_modules/b.txt": "a\r\nb\n" });
+  await h.command("scanSelection", h.uri("part"));
+  assert.equal(h.badge("part/a.txt")?.badge, "↵");
+  h.emit("fileChange", "part/node_modules/b.txt");
+  assert.equal(h.badge("part/a.txt")?.badge, "↵");
+  await h.command("scanSelection", h.uri("part/node_modules/b.txt"));
+  assert.equal(h.badge("part/node_modules/b.txt")?.badge, "↵");
+  h.emit("fileChange", "part/node_modules/b.txt");
+  assert.equal(h.badge("part/node_modules/b.txt"), undefined);
+});

@@ -97,7 +97,7 @@
       },
       {
         "command": "folderEncodingGuard.removeMixedAllowance",
-        "title": "文字コード・改行チェック: この混在許容を解除",
+        "title": "文字コード・改行チェック: 改行混在の個別設定を解除",
         "icon": "$(trash)"
       },
       {
@@ -129,6 +129,11 @@
         "command": "folderEncodingGuard.scanSelection",
         "title": "文字コード・改行チェック: 範囲を選んで解析",
         "icon": "$(search)"
+      },
+      {
+        "command": "folderEncodingGuard.configureMixedPolicy",
+        "title": "文字コード・改行チェック: 改行混在の許容を設定",
+        "icon": "$(settings-gear)"
       }
     ],
     "configuration": {
@@ -235,6 +240,16 @@
           "minimum": 1,
           "maximum": 32768,
           "description": "文字コードのスキャンと一括変換の対象にする1ファイルあたりの最大サイズ（KiB、最大32 MiB）です。"
+        },
+        "folderEncodingGuard.disallowedMixedLineEndings": {
+          "type": "array",
+          "scope": "resource",
+          "default": [],
+          "items": {
+            "type": "string",
+            "minLength": 1
+          },
+          "description": "改行混在を許容せず注意表示する相対パス。末尾/はフォルダー以下。許容設定と合わせ、最も具体的なパスを優先します。同じパスでは非許容を優先します。保存・変換は変更しません。"
         }
       }
     },
@@ -268,6 +283,11 @@
           "command": "folderEncodingGuard.scanSelection",
           "when": "resourceScheme == file",
           "group": "7_modification@49"
+        },
+        {
+          "command": "folderEncodingGuard.configureMixedPolicy",
+          "when": "resourceScheme == file",
+          "group": "7_modification@52"
         }
       ],
       "editor/title/context": [

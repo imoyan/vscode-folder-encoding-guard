@@ -7,6 +7,7 @@ import {
   configurationFor,
   getRules,
   getAllowedMixedLineEndings,
+  getDisallowedMixedLineEndings,
   fileUriForResource,
   resolveRule,
 } from "./workspaceRules.js";
@@ -36,11 +37,12 @@ export class MixedAllowanceItem extends vscode.TreeItem {
   public constructor(
     public readonly folder: vscode.WorkspaceFolder,
     public readonly entry: string,
+    public readonly allowed = true,
   ) {
     super(entry, vscode.TreeItemCollapsibleState.None);
-    this.description = `${entry.endsWith("/") ? "フォルダー以下" : "ファイル"} · ${folder.name}`;
-    this.tooltip = "意図的な改行混在を許容しています。右クリックで解除できます。変更やルール不一致の注意は継続します。";
-    this.iconPath = new vscode.ThemeIcon("pass");
+    this.description = `${allowed ? "許容する" : "許容しない"} · ${entry.endsWith("/") ? "フォルダー以下" : "ファイル"} · ${folder.name}`;
+    this.tooltip = `${allowed ? "混在の注意を表示しません" : "混在を注意表示します"}。右クリックで個別設定を解除すると親の設定に従います。ファイル内容・変更の注意・変換方法は変えません。`;
+    this.iconPath = new vscode.ThemeIcon(allowed ? "pass" : "eye");
   }
 }
 
@@ -248,7 +250,7 @@ export class RulesProvider implements vscode.TreeDataProvider<ViewItem> {
         ? `確認済み ${this.snapshot.scannedCount} 件 · 未確認 ${this.snapshot.skippedCount} 件 · ${formatScanTime(this.snapshot.completedAt)}`
         : this.needsRescan ? "変更あり・再確認が必要" : "未スキャン";
       const allowanceCount = (vscode.workspace.workspaceFolders ?? []).reduce(
-        (count, folder) => count + getAllowedMixedLineEndings(folder).length, 0,
+        (count, folder) => count + getAllowedMixedLineEndings(folder).length + getDisallowedMixedLineEndings(folder).length, 0,
       );
       return [
         new GroupItem("scope", "確認範囲", this.scopeLabel ?? "範囲を選んで解析できます"),
@@ -256,7 +258,7 @@ export class RulesProvider implements vscode.TreeDataProvider<ViewItem> {
         new GroupItem("summary", "状況", statusDescription),
         new GroupItem("findings", "要注意", this.snapshot ? `${this.snapshot.findings.length} 件` : "未確認"),
         ...(this.snapshot?.skippedCount ? [new GroupItem("skipped", "未確認の内訳", `${this.snapshot.skippedCount} 件`)] : []),
-        ...(allowanceCount > 0 ? [new GroupItem("allowances", "混在許容", `${allowanceCount} 件`)] : []),
+        ...(allowanceCount > 0 ? [new GroupItem("allowances", "改行混在の扱い", `${allowanceCount} 件`)] : []),
       ];
     }
     if (!(item instanceof GroupItem)) {
@@ -279,7 +281,8 @@ export class RulesProvider implements vscode.TreeDataProvider<ViewItem> {
     }
     if (item.kind === "allowances") {
       return (vscode.workspace.workspaceFolders ?? []).flatMap((folder) =>
-        getAllowedMixedLineEndings(folder).map((entry) => new MixedAllowanceItem(folder, entry)),
+        [...getAllowedMixedLineEndings(folder).map((entry) => new MixedAllowanceItem(folder, entry)),
+          ...getDisallowedMixedLineEndings(folder).map((entry) => new MixedAllowanceItem(folder, entry, false))],
       );
     }
     if (item.kind === "rules") {

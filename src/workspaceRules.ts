@@ -5,6 +5,7 @@ import { EncodingRule, findMatchingRule, sanitizeRules, isMixedPathAllowed } fro
 export const CONFIGURATION_SECTION = "folderEncodingGuard";
 export const RULES_SETTING = "rules";
 export const ALLOWED_MIXED_LINE_ENDINGS_SETTING = "allowedMixedLineEndings";
+export const DISALLOWED_MIXED_LINE_ENDINGS_SETTING = "disallowedMixedLineEndings";
 
 export interface RuleMatch {
   readonly folder: vscode.WorkspaceFolder;
@@ -21,8 +22,16 @@ export function getRules(folder: vscode.WorkspaceFolder): EncodingRule[] {
   return sanitizeRules(configurationFor(folder.uri).get<unknown>(RULES_SETTING));
 }
 
+export function getDisallowedMixedLineEndings(folder: vscode.WorkspaceFolder): string[] {
+  return mixedPaths(folder, DISALLOWED_MIXED_LINE_ENDINGS_SETTING);
+}
+
 export function getAllowedMixedLineEndings(folder: vscode.WorkspaceFolder): string[] {
-  const value = configurationFor(folder.uri).get<unknown>(ALLOWED_MIXED_LINE_ENDINGS_SETTING);
+  return mixedPaths(folder, ALLOWED_MIXED_LINE_ENDINGS_SETTING);
+}
+
+function mixedPaths(folder: vscode.WorkspaceFolder, setting: string): string[] {
+  const value = configurationFor(folder.uri).get<unknown>(setting);
   return Array.isArray(value)
     ? value.filter((entry): entry is string => typeof entry === "string" && entry.length > 0)
     : [];
@@ -35,7 +44,7 @@ export function relativePathFor(uri: vscode.Uri, folder: vscode.WorkspaceFolder)
 export function isMixedLineEndingAllowed(uri: vscode.Uri): boolean {
   const folder = vscode.workspace.getWorkspaceFolder(uri);
   return folder
-    ? isMixedPathAllowed(getAllowedMixedLineEndings(folder), relativePathFor(uri, folder))
+    ? isMixedPathAllowed(getAllowedMixedLineEndings(folder), relativePathFor(uri, folder), getDisallowedMixedLineEndings(folder))
     : false;
 }
 
