@@ -1,3 +1,4 @@
+import { retainGitVerifications } from "./gitPolicySnapshot.js";
 import type { EncodingScanSnapshot, EncodingSummary, GitInspectionStatus } from "./scanner.js";
 
 /** Batches contain disjoint successfully checked files; skipped files remain retryable. */
@@ -24,7 +25,7 @@ export function appendScanSnapshot(previous: EncodingScanSnapshot, next: Encodin
     ...next,
     pageCursors, hasMore: pageCursors.some((cursor) => !cursor.complete),
     files: [...(previous.files ?? []), ...(next.files ?? [])],
-    headVerifications: [...(previous.headVerifications ?? []), ...(next.headVerifications ?? [])],
+    headVerifications: retainGitVerifications([...(previous.headVerifications ?? []), ...(next.headVerifications ?? [])]),
     checkedUris: [...(previous.checkedUris ?? []), ...(next.checkedUris ?? [])],
     attemptedUris: [...new Set([...(previous.attemptedUris ?? []), ...(next.attemptedUris ?? [])])],
     scannedCount: previous.scannedCount + next.scannedCount,

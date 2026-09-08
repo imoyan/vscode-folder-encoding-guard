@@ -1,3 +1,4 @@
+import { retainGitVerifications } from "./gitPolicySnapshot.js";
 import { verifyGitInspectionHeads } from "./gitIntegration.js";
 import { configureMixedPolicy, readMixedPolicy, writeMixedPolicy } from "./mixedPolicy.js";
 import { attributesAffectScope, scopeSelectsFile, scopeContains, selectScanScope, type ScanScope } from "./scanScope.js";
@@ -130,11 +131,11 @@ export function activate(context: vscode.ExtensionContext): void {
         }
         if (snapshot && revision === scanRevision) {
           scanHasResult = true;
-          retainedSnapshot = { ...(retainedSnapshot ? appendScanSnapshot(retainedSnapshot, snapshot) : snapshot), scopeLabel: scanScope?.label };
+          retainedSnapshot = { ...(retainedSnapshot ? appendScanSnapshot(retainedSnapshot, snapshot) : { ...snapshot, headVerifications: retainGitVerifications(snapshot.headVerifications ?? []) }), scopeLabel: scanScope?.label };
           void vscode.commands.executeCommand("setContext", "folderEncodingGuard.hasMore", !!retainedSnapshot.hasMore);
           rulesProvider.setSnapshot(retainedSnapshot);
           decorationProvider.setSnapshot(retainedSnapshot);
-          void notifyGitIssues(context, snapshot.gitStatuses);
+          void notifyGitIssues(context, retainedSnapshot.gitStatuses);
         }
       } catch (error) {
         const message = error instanceof Error ? error.message : String(error);

@@ -812,3 +812,16 @@ test("a missing direct target loses both baselines without treating permission e
   await h.scan();
   assert.ok(!h.rows().some((row) => row.contextValue?.includes("WithChange") || row.contextValue?.includes("WithLocalEol")));
 });
+
+test("adding an unconfigured page does not reset an existing Git warning signature", async t => {
+  const h = await harness(t, { "a.txt": "hello\n", "b.md": "hello\n" });
+  h.config.set("rules", [{ pattern: "*.txt", encoding: "utf8" }]);
+  await h.command("scanSelection", h.uri("a.txt"));
+  const warnings = () => h.messages.filter(message => message.startsWith("Gitによる規則・履歴の確認に注意があります"));
+  assert.equal(warnings().length, 1);
+  const signature = h.state.get("gitRuleWarningState.v1");
+  await h.command("addScanSelection", h.uri("b.md"));
+  assert.equal(h.state.get("gitRuleWarningState.v1"), signature);
+  await h.scan();
+  assert.equal(warnings().length, 1);
+});

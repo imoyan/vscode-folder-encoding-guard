@@ -1,3 +1,4 @@
+import { readGitPolicySnapshot, sameGitPolicySnapshot, type GitPolicySnapshot } from "./gitPolicySnapshot.js";
 import * as vscode from "vscode";
 import * as path from "node:path";
 import { realpath } from "node:fs/promises";
@@ -46,7 +47,8 @@ export interface GitInspectionResult {
   readonly headVerifications: readonly GitHeadVerification[];
 }
 
-interface GitHeadVerification {
+export interface GitHeadVerification {
+  readonly policyInputs?: GitPolicySnapshot;
   readonly gitPath: string;
   readonly repositoryRoot: string;
   readonly expectedCommit?: string;
@@ -129,6 +131,7 @@ export async function inspectGitFiles(
         : new Set(),
       stagedRenames?.kind === "found" ? stagedRenames.ignoreCase : false,
     );
+    const policyInputs = await readGitPolicySnapshot(git.git.path, group.rootUri.fsPath, prepared.map(entry => entry.target.currentPath), token);
     let repositoryInspections: ReadonlyMap<string, RepositoryFileInspection> = new Map();
     let inspectionSucceeded = false;
     if (head.kind !== "failed") {
@@ -164,6 +167,7 @@ export async function inspectGitFiles(
     const verificationTargets = prepared.map((entry) => entry.target);
     if (head.kind !== "failed" && inspectionSucceeded) {
       headVerifications.push({
+        policyInputs,
         gitPath: git.git.path,
         repositoryRoot: group.rootUri.fsPath,
         expectedCommit: head.kind === "found" ? head.commit : undefined,
@@ -237,6 +241,11 @@ export async function verifyGitInspectionHeads(
       ) {
         return false;
       }
+    }
+    if (verification.policyInputs) {
+      const currentInputs = await readGitPolicySnapshot(verification.gitPath, verification.repositoryRoot, [], token, verification.policyInputs.files.keys());
+      if (!currentInputs || !sameGitPolicySnapshot(verification.policyInputs, currentInputs)) return false;
+      if (!verification.targets.length) continue;
     }
     let currentPolicy: ReadonlyMap<string, RepositoryFileInspection>;
     try {
