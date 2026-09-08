@@ -3,7 +3,7 @@ import * as vscode from "vscode";
 
 export interface ScanScope {
   readonly label: string;
-  readonly targets: readonly { uri: vscode.Uri; directory: boolean }[];
+  readonly targets: readonly { uri: vscode.Uri; directory: boolean; rulesOnly?: boolean }[];
 }
 
 export async function selectScanScope(supplied?: vscode.Uri, selected?: readonly vscode.Uri[]): Promise<ScanScope | "workspace" | undefined> {

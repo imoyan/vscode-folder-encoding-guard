@@ -1,3 +1,4 @@
+import { verifyGitInspectionHeads } from "./gitIntegration.js";
 import { configureMixedPolicy, readMixedPolicy, writeMixedPolicy } from "./mixedPolicy.js";
 import { scopeContains, selectScanScope, type ScanScope } from "./scanScope.js";
 import * as path from "node:path";
@@ -7,7 +8,8 @@ import { DEFAULT_SCAN_EXCLUDE } from "./fileLimits.js";
 import { CoalescingTask, SerialTaskQueue } from "./coalescingTask.js";
 import { ConversionManager } from "./conversion.js";
 import { encodingInfo } from "./rules.js";
-import { WorkspaceEncodingScanner } from "./scanner.js";
+import { appendScanSnapshot } from "./scanSession.js";
+import { WorkspaceEncodingScanner, type EncodingScanSnapshot } from "./scanner.js";
 import {
   CONFIGURATION_SECTION,
   configurationFor,
@@ -74,10 +76,14 @@ export function activate(context: vscode.ExtensionContext): void {
   let scanCancelledByUser = false;
   let scanScope: ScanScope | undefined;
   let choosingScope = false;
+  let retainedSnapshot: EncodingScanSnapshot | undefined;
+  let additionScope: ScanScope | "workspace" | undefined;
 
   const invalidateScan = (changed = false): void => {
     scanRevision += 1;
     scanHasResult = false;
+    retainedSnapshot = undefined;
+    additionScope = undefined;
     scanCancellation?.cancel();
     rulesProvider.invalidateSnapshot(changed);
     decorationProvider.setSnapshot(undefined);
@@ -95,16 +101,34 @@ export function activate(context: vscode.ExtensionContext): void {
         true,
       ).then(undefined, () => undefined);
       try {
+        const retainedGit = retainedSnapshot?.headVerifications;
+        const previousHeadsCurrent = async (): Promise<boolean> => {
+          try {
+            return !retainedGit?.length || await verifyGitInspectionHeads({ availability: "available", files: new Map(), headVerifications: retainedGit }, cancellation.token);
+          } catch { return cancellation.token.isCancellationRequested; }
+        };
+        if (!(await previousHeadsCurrent())) {
+          invalidateScan(true);
+          void vscode.window.showInformationMessage("Gitの比較基準が変わりました。更新ボタンで追加済みの範囲を確認し直してください。");
+          return;
+        }
         const snapshot = await scanner.scan(
           () => revision === scanRevision,
           cancellation.token,
           () => { scanCancelledByUser = true; },
-          scanScope,
+          additionScope === "workspace" ? undefined : additionScope ?? scanScope,
+          new Set(retainedSnapshot?.checkedUris),
         );
+        if (snapshot && revision === scanRevision && !(await previousHeadsCurrent())) {
+          invalidateScan(true);
+          void vscode.window.showInformationMessage("Gitの比較基準が変わりました。更新ボタンで追加済みの範囲を確認し直してください。");
+          return;
+        }
         if (snapshot && revision === scanRevision) {
           scanHasResult = true;
-          rulesProvider.setSnapshot(snapshot);
-          decorationProvider.setSnapshot(snapshot);
+          retainedSnapshot = { ...(retainedSnapshot ? appendScanSnapshot(retainedSnapshot, snapshot) : snapshot), scopeLabel: scanScope?.label };
+          rulesProvider.setSnapshot(retainedSnapshot);
+          decorationProvider.setSnapshot(retainedSnapshot);
           void notifyGitIssues(context, snapshot.gitStatuses);
         }
       } catch (error) {
@@ -249,6 +273,34 @@ export function activate(context: vscode.ExtensionContext): void {
         await runScan();
       } finally { choosingScope = false; }
     }),
+    vscode.commands.registerCommand("folderEncodingGuard.addScanSelection", async (uri?: vscode.Uri, selected?: readonly vscode.Uri[]) => {
+      if (choosingScope || scanCancellation) return;
+      choosingScope = true;
+      try {
+        const scope = await selectScanScope(uri, selected);
+        if (!scope) return;
+        const canAppend = scanHasResult && retainedSnapshot !== undefined;
+        const oldScope = scanScope;
+        if (!canAppend) {
+          scanScope = scope === "workspace" ? undefined : scope;
+          invalidateScan();
+        } else {
+          const workspaceTargets = (vscode.workspace.workspaceFolders ?? []).map((folder) => ({ uri: folder.uri, directory: true, rulesOnly: true }));
+          const targets = [...new Map([...(oldScope?.targets ?? workspaceTargets), ...(scope === "workspace" ? workspaceTargets : scope.targets)]
+            .map((target) => [`${target.uri.toString()}:${!!target.rulesOnly}`, target])).values()];
+          scanScope = { targets, label: targets.map((target) => `${vscode.workspace.asRelativePath(target.uri) || vscode.workspace.getWorkspaceFolder(target.uri)?.name}${target.directory ? target.rulesOnly ? " / ルール対象" : " / 以下" : ""}`).join("、") };
+        }
+        rulesProvider.setScope(scanScope?.label);
+        await vscode.commands.executeCommand("setContext", "folderEncodingGuard.hasScanScope", true);
+        additionScope = canAppend ? scope : undefined;
+        const before = retainedSnapshot;
+        await runScan();
+        if (canAppend && retainedSnapshot === before) {
+          scanScope = oldScope;
+          rulesProvider.setScope(scanScope?.label);
+        }
+      } finally { additionScope = undefined; choosingScope = false; }
+    }),
     vscode.commands.registerCommand("folderEncodingGuard.inspectActiveFile", inspectActiveFile),
     vscode.commands.registerCommand(
       "folderEncodingGuard.convertFolder",
@@ -327,7 +379,7 @@ export function activate(context: vscode.ExtensionContext): void {
     vscode.commands.registerCommand("folderEncodingGuard.editRule", (item?: RuleItem) => editRule(item, settingsQueue)),
     vscode.commands.registerCommand("folderEncodingGuard.moveRuleUp", (item?: RuleItem) => moveRule(item, -1, settingsQueue)),
     vscode.commands.registerCommand("folderEncodingGuard.moveRuleDown", (item?: RuleItem) => moveRule(item, 1, settingsQueue)),
-    vscode.commands.registerCommand("folderEncodingGuard.refresh", runScan),
+    vscode.commands.registerCommand("folderEncodingGuard.refresh", refreshScan),
     vscode.commands.registerCommand("folderEncodingGuard.acknowledgeLineEndingChange", async (item?: FindingItem) => {
       if (acknowledging) return;
       acknowledging = true;

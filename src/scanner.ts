@@ -1,4 +1,4 @@
-import type { ScanScope } from "./scanScope.js";
+import { scopeContains, type ScanScope } from "./scanScope.js";
 import * as path from "node:path";
 import * as vscode from "vscode";
 import {
@@ -61,6 +61,9 @@ export interface EncodingSummary {
 }
 
 export interface EncodingScanSnapshot {
+  readonly headVerifications?: GitInspectionResult["headVerifications"];
+  readonly checkedUris?: readonly string[];
+  readonly attemptedUris?: readonly string[];
   readonly completedAt: Date;
   readonly scopeLabel?: string;
   readonly scannedCount: number;
@@ -118,8 +121,9 @@ export class WorkspaceEncodingScanner {
     cancellationToken?: vscode.CancellationToken,
     onUserCancellation: () => void = () => undefined,
     scope?: ScanScope,
+    alreadyChecked: ReadonlySet<string> = new Set(),
   ): Promise<EncodingScanSnapshot | undefined> {
-    const folders = (vscode.workspace.workspaceFolders ?? []).filter((folder) => !scope || scope.targets.some(({ uri }) => vscode.workspace.getWorkspaceFolder(uri)?.uri.toString() === folder.uri.toString()));
+    const folders = (vscode.workspace.workspaceFolders ?? []).filter((folder) => !scope || scope.targets.some(({ uri }) => vscode.workspace.getWorkspaceFolder(uri)?.uri.toString() === folder.uri.toString()) || scopeContains(scope, folder.uri));
     if (folders.length === 0) {
       void vscode.window.showInformationMessage(
         "文字コードを確認するワークスペースを開いてください。",
@@ -166,8 +170,12 @@ export class WorkspaceEncodingScanner {
             }
             const rules = this.patternsFor(folder);
             // Enumerate with VS Code syntax, then apply the shared minimatch rule matcher.
-            const targets = scope?.targets.filter(({ uri }) => vscode.workspace.getWorkspaceFolder(uri)?.uri.toString() === folder.uri.toString())
-              ?? [{ uri: folder.uri, directory: true }];
+            const targets = scope?.targets.flatMap((target) => {
+              if (vscode.workspace.getWorkspaceFolder(target.uri)?.uri.toString() === folder.uri.toString()) return [target];
+              return target.directory && scopeContains({ label: scope.label, targets: [target] }, folder.uri)
+                ? [{ ...target, uri: folder.uri }] : [];
+            })
+              ?? [{ uri: folder.uri, directory: true, rulesOnly: true }];
             const config = this.configurationFor(folder.uri);
             const maxFiles = config.get<number>("maxScanFiles", 5000);
             const maxSize = configuredFileSizeLimit(
@@ -184,7 +192,7 @@ export class WorkspaceEncodingScanner {
                 uris = target.directory ? await vscode.workspace.findFiles(
                   new vscode.RelativePattern(target.uri, "**/*"),
                   exclude,
-                  maxFiles + 1,
+                  maxFiles + alreadyChecked.size + 1,
                   token,
                 ) : [target.uri];
               } catch (error) {
@@ -196,6 +204,7 @@ export class WorkspaceEncodingScanner {
               if (token.isCancellationRequested || !isCurrent()) {
                 return undefined;
               }
+              uris = uris.filter((uri) => !alreadyChecked.has(uri.toString()));
               if (uris.length > maxFiles) {
                 void vscode.window.showErrorMessage(
                   `${folder.name} の検索候補が ${maxFiles} 件を超えました。` +
@@ -208,7 +217,7 @@ export class WorkspaceEncodingScanner {
                 if (!owner || owner.uri.toString() !== folder.uri.toString()) {
                   continue;
                 }
-                if (!scope && rules.length > 0 && this.expectedEncodingFor(uri) === undefined) continue;
+                if ((!scope || target.rulesOnly) && rules.length > 0 && this.expectedEncodingFor(uri) === undefined) continue;
                 folderResources.set(uri.toString(), uri);
                 if (folderResources.size > maxFiles) {
                   void vscode.window.showErrorMessage(
@@ -276,11 +285,17 @@ export class WorkspaceEncodingScanner {
           const resourceKeys = new Set(
             comparisonResources.map((resource) => resource.uri.toString()),
           );
+          const retainBaseline = (key: string): boolean => {
+            if (resourceKeys.has(key) || alreadyChecked.has(key)) return true;
+            if (!scope) return false;
+            try { return !scopeContains(scope, vscode.Uri.parse(key)); }
+            catch { return false; }
+          };
           const nextLineEndings = new Map(
-            [...previousLineEndings].filter(([key]) => scope !== undefined || resourceKeys.has(key)),
+            [...previousLineEndings].filter(([key]) => retainBaseline(key)),
           );
           const nextEncodings = new Map(
-            [...previousEncodings].filter(([key]) => scope !== undefined || resourceKeys.has(key)),
+            [...previousEncodings].filter(([key]) => retainBaseline(key)),
           );
           const scanResourceKeys = new Set(
             scanResources.map((resource) => resource.uri.toString()),
@@ -327,6 +342,7 @@ export class WorkspaceEncodingScanner {
           const lineEndingCounts = new Map<string, number>();
           const findings: ScanFinding[] = [];
           let scannedCount = 0;
+          const checkedUris: string[] = [];
 
           for (const [index, resource] of scanResources.entries()) {
             if (token.isCancellationRequested || !isCurrent()) {
@@ -380,6 +396,7 @@ export class WorkspaceEncodingScanner {
               }
 
               scannedCount += 1;
+              checkedUris.push(resource.uri.toString());
               const summaryEncoding =
                 classification.kind === "ascii"
                   ? "ascii"
@@ -562,7 +579,11 @@ export class WorkspaceEncodingScanner {
             );
             return undefined;
           }
+          const checkedSet = new Set(checkedUris);
           return {
+            headVerifications: gitInspection.headVerifications,
+            checkedUris,
+            attemptedUris: resources.map(({ uri }) => uri.toString()),
             completedAt: new Date(),
             scopeLabel: scope?.label,
             scannedCount,
@@ -587,7 +608,7 @@ export class WorkspaceEncodingScanner {
             ),
             gitStatuses: buildGitStatuses(
               folders,
-              comparisonResources,
+              comparisonResources.filter(({ uri }) => checkedSet.has(uri.toString())),
               gitInspection,
               this.configurationFor,
             ),

@@ -91,6 +91,17 @@ export async function run(): Promise<void> {
   assert.equal((await items("allowances")).length, 0);
   assert.ok((await finding(mixed)).finding?.mixedLineEndings);
 
+  picks.push({ title: "現在：許容しない", label: "許容する" });
+  await command("configureMixedPolicy", plain.uri);
+  picks.push({ title: "現在：許容する（./ から継承）", label: "許容しない" });
+  await command("configureMixedPolicy", mixed);
+  await scan();
+  assert.ok((await finding(mixed)).finding?.mixedLineEndings);
+  picks.push({ title: "現在：許容しない（この対象の指定）", label: "個別設定を解除" });
+  await command("configureMixedPolicy", mixed);
+  picks.push({ title: "現在：許容する（この対象の指定）", label: "個別設定を解除" });
+  await command("configureMixedPolicy", plain.uri);
+
   const changed = vscode.Uri.joinPath(tracked.uri, "history.txt");
   await writeObserved(changed, await vscode.workspace.encode("履歴\r\n", { encoding: "utf8bom" }));
   await scan();
@@ -186,6 +197,14 @@ export async function run(): Promise<void> {
   assert.equal(headDocument.encoding, headEncoding);
   assert.deepEqual(await vscode.workspace.fs.readFile(changed), bytesBeforeReopen);
   assert.deepEqual(nonModalResponses, []);
+
+  await command("scanSelection", mixed);
+  await command("addScanSelection", changed);
+  assert.ok(await finding(mixed));
+  assert.ok(await finding(changed));
+  await scan();
+  assert.ok(await finding(mixed));
+  assert.ok(await finding(changed));
 
   assert.deepEqual(picks, []);
   assert.deepEqual(confirmations, []);

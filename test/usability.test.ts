@@ -56,6 +56,7 @@ async function harness(t: TestContext, input: Record<string, string | Uint8Array
   };
   const folder = { uri: Uri.file(root), name: "workspace", index: 0 };
   const config = new Map<string, unknown>();
+  const configFailures: string[] = [];
   const state = new Map<string, unknown>();
   const messages: string[] = [];
   const picks: unknown[] = [];
@@ -72,12 +73,14 @@ async function harness(t: TestContext, input: Record<string, string | Uint8Array
   let progressCancellation: Cancellation | undefined;
   const disposable = { dispose() {} };
   const workspace = {
+    workspaceFile: Uri.file(path.join(root, "test.code-workspace")) as Uri | undefined,
     workspaceFolders: [folder], textDocuments: [] as unknown[],
     asRelativePath: (uri: Uri) => path.relative(root, uri.fsPath),
-    getWorkspaceFolder: (uri: Uri) => (uri.fsPath === root || uri.fsPath.startsWith(root + path.sep)) ? folder : undefined,
-    getConfiguration: () => ({ get: (key: string, fallback?: unknown) => config.get(key) ?? fallback,
+    getWorkspaceFolder: (uri: Uri) => workspace.workspaceFolders.filter((candidate) => uri.fsPath === candidate.uri.fsPath || uri.fsPath.startsWith(candidate.uri.fsPath + path.sep)).sort((a, b) => b.uri.fsPath.length - a.uri.fsPath.length)[0],
+    getConfiguration: () => ({ inspect: (key: string) => ({ workspaceFolderValue: workspace.workspaceFile ? config.get(key) : undefined, workspaceValue: workspace.workspaceFile ? undefined : config.get(key) }), get: (key: string, fallback?: unknown) => config.get(key) ?? fallback,
       update: async (key: string, value: unknown) => {
-        config.set(key, value); events.get("configuration")?.fire({ affectsConfiguration: () => true });
+        if (configFailures[0] === key) { configFailures.shift(); throw new Error("設定保存失敗"); }
+        if (value === undefined) config.delete(key); else config.set(key, value); events.get("configuration")?.fire({ affectsConfiguration: () => true });
       },
     }),
     findFiles: async (pattern: { pattern: string; base?: Uri | { uri: Uri } }, exclude: string, limit: number) => { searchPatterns.push(pattern.pattern); return Object.keys(input)
@@ -125,7 +128,7 @@ async function harness(t: TestContext, input: Record<string, string | Uint8Array
     TreeItem: class { constructor(public label: string) {} },
     ThemeIcon: class {}, ThemeColor: class {}, MarkdownString: class {},
     TreeItemCollapsibleState: { None: 0, Expanded: 2 },
-    StatusBarAlignment: { Right: 2 }, ProgressLocation: { Notification: 15 }, FileType: { File: 1, Directory: 2 }, ConfigurationTarget: { WorkspaceFolder: 3 },
+    StatusBarAlignment: { Right: 2 }, ProgressLocation: { Notification: 15 }, FileType: { File: 1, Directory: 2 }, ConfigurationTarget: { Workspace: 2, WorkspaceFolder: 3 },
     extensions: { getExtension: () => undefined },
     languages: { createDiagnosticCollection: () => ({ ...disposable, set() {}, delete() {} }) },
     commands: {
@@ -147,7 +150,7 @@ async function harness(t: TestContext, input: Record<string, string | Uint8Array
   subscriptions.push(provider!.onDidChangeTreeData(() => { treeChanges++; }), decorations!.onDidChangeFileDecorations(() => { decorationChanges++; }));
   t.after(() => subscriptions.forEach((item) => item.dispose()));
   return {
-    config, state, messages, window, workspace, runtime, picks, confirmations, information, shownPicks, searchPatterns,
+    config, configFailures, state, messages, window, workspace, runtime, picks, confirmations, information, shownPicks, searchPatterns,
     changes: () => ({ tree: treeChanges, decorations: decorationChanges }),
     command: (name: string, ...args: unknown[]) => commands.get(`folderEncodingGuard.${name}`)!(...args),
     selection: () => runtime.selectConversion(context, () => undefined,
@@ -552,4 +555,121 @@ test("folder-scoped scans ignore excluded changes while direct file scopes obser
   assert.equal(h.badge("part/node_modules/b.txt")?.badge, "↵");
   h.emit("fileChange", "part/node_modules/b.txt");
   assert.equal(h.badge("part/node_modules/b.txt"), undefined);
+});
+
+
+test("mixed policy shows inherited and exact settings and restores failed writes", async (t) => {
+  const h = await harness(t, { "data/a.csv": "a\r\nb\n" });
+  h.config.set("allowedMixedLineEndings", ["data/"]);
+  await h.command("configureMixedPolicy", h.uri("data/a.csv"));
+  assert.match(h.shownPicks.at(-1)!.title!, /現在：許容する.*data\/ から継承/);
+  await h.command("configureMixedPolicy", h.uri("data"));
+  assert.match(h.shownPicks.at(-1)!.title!, /現在：許容する.*この対象の指定/);
+  h.configFailures.push("allowedMixedLineEndings");
+  h.picks.push({ allow: false });
+  await h.command("configureMixedPolicy", h.uri("data/a.csv"));
+  assert.deepEqual(h.config.get("allowedMixedLineEndings"), ["data/"]);
+  assert.equal(h.config.has("disallowedMixedLineEndings"), false);
+  assert.ok(h.messages.some((message) => message.includes("元の設定に戻しました")));
+  h.configFailures.push("allowedMixedLineEndings", "disallowedMixedLineEndings");
+  h.picks.push({ allow: false });
+  await h.command("configureMixedPolicy", h.uri("data/a.csv"));
+  assert.ok(h.messages.some((message) => message.includes("復元に失敗")));
+});
+
+test("allowed mixed endings start unselected and final confirmation explains all newlines", async (t) => {
+  const h = await harness(t, { "data.csv": "a\r\nb\n" });
+  h.config.set("allowedMixedLineEndings", ["data.csv"]);
+  h.picks.push({ encoding: false, eol: true }, { value: "lf" }, { encoding: "utf8" }, (items: Record<string, unknown>[]) => {
+    assert.equal(items[0]?.picked, false);
+    assert.equal(items[0]?.changesAllowedMixedEndings, true);
+    assert.match(String(items[0]?.description), /許容済みの混在を統一/);
+    return items;
+  });
+  h.confirmations.push("変換する");
+  assert.ok(await h.selection());
+  assert.ok(h.messages.some((message) => message.includes("セル内改行を含むすべての改行")));
+  assert.equal(await readFile(h.uri("data.csv").fsPath, "utf8"), "a\r\nb\n");
+});
+
+test("additional scans retain findings without recounting overlaps and retry skipped files", async (t) => {
+  const h = await harness(t, { "a.txt": "a\r\nb\n", "b.txt": "a\r\nb\n" });
+  await h.command("scanSelection", h.uri("a.txt"));
+  await h.command("addScanSelection", h.uri("a.txt"));
+  assert.match(String(h.rows().find((row) => row.label === "状況")?.description), /確認済み 1 件/);
+  await h.command("addScanSelection", h.uri("b.txt"));
+  assert.equal(h.badge("a.txt")?.badge, "↵");
+  assert.equal(h.badge("b.txt")?.badge, "↵");
+  assert.match(String(h.rows().find((row) => row.label === "状況")?.description), /確認済み 2 件/);
+  h.emit("fileChange", "a.txt");
+  assert.equal(h.badge("b.txt"), undefined);
+  await h.scan();
+  assert.equal(h.badge("a.txt")?.badge, "↵");
+  assert.equal(h.badge("b.txt")?.badge, "↵");
+  h.edit("b.txt", "a\n");
+  await h.command("scanSelection", h.uri("b.txt"));
+  assert.match(String(h.rows().find((row) => row.label === "状況")?.description), /未確認 1 件/);
+  h.workspace.textDocuments = [];
+  await h.command("addScanSelection", h.uri("b.txt"));
+  assert.match(String(h.rows().find((row) => row.label === "状況")?.description), /確認済み 1 件 · 未確認 0 件/);
+});
+
+test("cancelling an additional scan preserves the previous results and scope", async (t) => {
+  const h = await harness(t, { "a.txt": "a\r\nb\n", "b.txt": "日本語\r\nb\n" });
+  await h.command("scanSelection", h.uri("a.txt"));
+  h.duringDecode(() => h.cancelProgress());
+  await h.command("addScanSelection", h.uri("b.txt"));
+  assert.equal(h.badge("a.txt")?.badge, "↵");
+  assert.equal(h.badge("b.txt"), undefined);
+  assert.equal(h.rows().find((row) => row.label === "確認範囲")?.description, "a.txt");
+});
+
+
+test("single-folder rollback restores its existing workspace-level values", async (t) => {
+  const h = await harness(t, { "a.txt": "a\n" });
+  h.workspace.workspaceFile = undefined;
+  h.config.set("allowedMixedLineEndings", ["a.txt"]);
+  h.configFailures.push("allowedMixedLineEndings");
+  h.picks.push({ allow: false });
+  await h.command("configureMixedPolicy", h.uri("a.txt"));
+  assert.deepEqual(h.config.get("allowedMixedLineEndings"), ["a.txt"]);
+  assert.equal(h.config.has("disallowedMixedLineEndings"), false);
+});
+
+test("refresh preserves explicitly added files outside the workspace rules", async (t) => {
+  const h = await harness(t, { "a.txt": "a\r\nb\n", "b.csv": "a\r\nb\n", "c.csv": "a\r\nb\n" });
+  h.config.set("rules", [{ pattern: "*.txt", encoding: "utf8" }]);
+  await h.scan();
+  await h.command("addScanSelection", h.uri("b.csv"));
+  await h.scan();
+  assert.equal(h.badge("a.txt")?.badge, "↵");
+  assert.equal(h.badge("b.csv")?.badge, "↵");
+  assert.equal(h.badge("c.csv"), undefined);
+});
+
+
+test("outer directory selection includes nested workspace roots", async (t) => {
+  const h = await harness(t, { "a.txt": "a\r\nb\n", "nested/b.txt": "a\r\nb\n" });
+  h.workspace.workspaceFolders.push({ uri: h.uri("nested"), name: "nested", index: 1 });
+  await h.command("scanSelection", h.uri(""));
+  assert.equal(h.badge("a.txt")?.badge, "↵");
+  assert.equal(h.badge("nested/b.txt")?.badge, "↵");
+  assert.match(String(h.rows().find((row) => row.label === "状況")?.description), /確認済み 2 件/);
+});
+
+test("scoped refresh removes deleted baselines while keeping unselected files", async (t) => {
+  const input: Record<string, string> = { "part/a.txt": "日本語\n", "outside.txt": "日本語\n" };
+  const h = await harness(t, input);
+  h.config.set("rules", [{ pattern: "**/*", encoding: "utf8" }]);
+  await h.scan();
+  const outside = h.uri("outside.txt").toString();
+  const removed = h.uri("part/a.txt").toString();
+  await rm(h.uri("part/a.txt").fsPath);
+  delete input["part/a.txt"];
+  await h.command("scanSelection", h.uri("part"));
+  for (const key of ["encodingBaseline.v1", "lineEndingBaseline.v2"]) {
+    const baseline = h.state.get(key) as Record<string, unknown>;
+    assert.ok(baseline[outside]);
+    assert.equal(baseline[removed], undefined);
+  }
 });

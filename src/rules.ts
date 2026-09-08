@@ -58,21 +58,25 @@ export function patternForFolder(relativePath: string): string {
 // Existing entries are literal file paths. A trailing slash denotes a folder,
 // not a glob, so names containing [] or * are never interpreted as patterns.
 export function isMixedPathAllowed(entries: readonly string[], relativePath: string, denied: readonly string[] = []): boolean {
+  return resolveMixedPathPolicy(entries, relativePath, denied)?.allowed ?? false;
+}
+
+export function resolveMixedPathPolicy(entries: readonly string[], relativePath: string, denied: readonly string[] = []): { entry: string; allowed: boolean } | undefined {
   const normalizedPath = normalizeRelativePath(relativePath);
-  let allowed = false;
+  let result: { entry: string; allowed: boolean } | undefined;
   let specificity = -1;
   for (const [paths, allow] of [[entries, true], [denied, false]] as const) {
     for (const entry of paths) {
       const folder = entry.replaceAll("\\", "/").endsWith("/");
       const normalized = normalizeRelativePath(entry);
-      const matches = folder ? normalized === "" || normalizedPath.startsWith(`${normalized}/`) : normalizedPath === normalized;
+      const matches = folder ? normalized === "" || normalizedPath.startsWith(`${normalized}/`) || (relativePath.replaceAll("\\", "/").endsWith("/") && normalizedPath === normalized) : normalizedPath === normalized;
       if (matches && normalized.length >= specificity) {
         specificity = normalized.length;
-        allowed = allow;
+        result = { entry, allowed: allow };
       }
     }
   }
-  return allowed;
+  return result;
 }
 
 export function findMatchingRule(

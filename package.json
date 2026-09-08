@@ -134,6 +134,11 @@
         "command": "folderEncodingGuard.configureMixedPolicy",
         "title": "文字コード・改行チェック: 改行混在の許容を設定",
         "icon": "$(settings-gear)"
+      },
+      {
+        "command": "folderEncodingGuard.addScanSelection",
+        "title": "文字コード・改行チェック: 範囲を追加して解析",
+        "icon": "$(add)"
       }
     ],
     "configuration": {
@@ -307,6 +312,11 @@
           "command": "folderEncodingGuard.refresh",
           "when": "view == folderEncodingGuard.rulesView && !folderEncodingGuard.scanning && folderEncodingGuard.hasScanScope",
           "group": "navigation"
+        },
+        {
+          "command": "folderEncodingGuard.addScanSelection",
+          "when": "view == folderEncodingGuard.rulesView && folderEncodingGuard.hasScanScope && !folderEncodingGuard.scanning",
+          "group": "navigation@3"
         }
       ],
       "view/item/context": [
