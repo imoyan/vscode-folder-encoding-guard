@@ -26,21 +26,24 @@ async function scan(): Promise<void> {
 
 // File events arrive asynchronously. Wait for delivery before the next manual
 // scan, instead of racing an earlier write against its invalidation event.
-async function withObservedFileChange(uri: vscode.Uri, action: () => PromiseLike<unknown>): Promise<void> {
+async function withObservedFileChange(uri: vscode.Uri | readonly vscode.Uri[], action: () => PromiseLike<unknown>): Promise<void> {
+  const expected = new Set((Array.isArray(uri) ? uri : [uri]).map((entry: vscode.Uri) => entry.toString()));
+  const pending = new Set(expected);
   const watcher = vscode.workspace.createFileSystemWatcher("**/*");
   let timer: ReturnType<typeof setTimeout> | undefined;
   let quietTimer: ReturnType<typeof setTimeout> | undefined;
   let accept: (() => void) | undefined;
   const event = new Promise<void>((resolve, reject) => {
     accept = resolve;
-    timer = setTimeout(() => reject(new Error(`Missing file event: ${uri.fsPath}`)), 10000);
+    timer = setTimeout(() => reject(new Error(`Missing file event: ${[...pending].join(", ")}`)), 10000);
   });
   const observe = (changed: vscode.Uri): void => {
-    if (changed.toString() !== uri.toString()) return;
+    if (!expected.has(changed.toString())) return;
+    pending.delete(changed.toString());
     // Native watchers may deliver create/change in separate batches. Wait for
     // a quiet period, bounded by the timeout, before the next scripted action.
     clearTimeout(quietTimer);
-    quietTimer = setTimeout(() => accept?.(), 250);
+    if (!pending.size) quietTimer = setTimeout(() => accept?.(), 250);
   };
   const listeners = [watcher.onDidCreate(observe), watcher.onDidChange(observe)];
   try {
@@ -207,19 +210,18 @@ export async function run(): Promise<void> {
   assert.ok(await finding(changed));
 
   const previewFolder = vscode.Uri.joinPath(plain.uri, "preview");
-  await vscode.workspace.fs.createDirectory(previewFolder);
-  const lastPreview = vscode.Uri.joinPath(previewFolder, "preview-120.txt");
-  await withObservedFileChange(lastPreview, async () => {
-    await Promise.all(Array.from({ length: 121 }, (_, index) => vscode.workspace.fs.writeFile(
-      vscode.Uri.joinPath(previewFolder, `preview-${String(index).padStart(3, "0")}.txt`), new TextEncoder().encode("hello\n"),
-    )));
+  const previewFiles = Array.from({ length: 121 }, (_, index) =>
+    vscode.Uri.joinPath(previewFolder, `preview-${String(index).padStart(3, "0")}.txt`));
+  await withObservedFileChange([previewFolder, ...previewFiles], async () => {
+    await vscode.workspace.fs.createDirectory(previewFolder);
+    await Promise.all(previewFiles.map(uri => vscode.workspace.fs.writeFile(uri, new TextEncoder().encode("hello\n"))));
   });
   await command("scanSelection", previewFolder);
   assert.equal((await items("files")).filter((item) => item.contextValue === "scannedFile").length, 100);
   assert.ok((await items("files")).some((item) => item.command?.command === "folderEncodingGuard.continueScan"));
   await command("continueScan");
   const fileRows = (await items("files")).filter((item) => item.contextValue === "scannedFile");
-  assert.equal(fileRows.length, 21);
+  assert.equal(fileRows.length, 21, JSON.stringify({ errors, summary: (await items("summary")).map(item => item.label) }));
   assert.ok(fileRows.every((item) => item.description?.toString().includes("ASCII互換 / LF · 注意なし")));
   assert.ok(!(await items("files")).some((item) => item.command?.command === "folderEncodingGuard.continueScan"));
   await command("showFilesPage", -1);

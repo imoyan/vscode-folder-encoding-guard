@@ -1,6 +1,6 @@
 import { verifyGitInspectionHeads } from "./gitIntegration.js";
 import { configureMixedPolicy, readMixedPolicy, writeMixedPolicy } from "./mixedPolicy.js";
-import { scopeContains, selectScanScope, type ScanScope } from "./scanScope.js";
+import { attributesAffectScope, scopeSelectsFile, scopeContains, selectScanScope, type ScanScope } from "./scanScope.js";
 import * as path from "node:path";
 import * as vscode from "vscode";
 import { minimatch } from "minimatch";
@@ -64,6 +64,7 @@ export function activate(context: vscode.ExtensionContext): void {
     ],
     isMixedLineEndingAllowed,
   );
+  context.subscriptions.push(scanner);
   const scanScheduler = new CoalescingTask();
   const settingsQueue = new SerialTaskQueue();
   const baselineQueue = new SerialTaskQueue();
@@ -83,6 +84,7 @@ export function activate(context: vscode.ExtensionContext): void {
     scanRevision += 1;
     scanHasResult = false;
     retainedSnapshot = undefined;
+    scanner.dispose();
     void vscode.commands.executeCommand("setContext", "folderEncodingGuard.hasMore", false);
     additionScope = undefined;
     scanCancellation?.cancel();
@@ -173,12 +175,18 @@ export function activate(context: vscode.ExtensionContext): void {
     const exclude = configurationFor(folder.uri).get<string>("conversionExclude",
       DEFAULT_SCAN_EXCLUDE);
     // Git attributes affect comparisons even when the file itself has no encoding rule.
-    const attributesChanged = path.basename(uri.fsPath) === ".gitattributes";
-    const selected = scanScope && scopeContains(scanScope, uri);
-    if (scanScope && !selected && !attributesChanged) return;
+    const attributesChanged = path.basename(uri.fsPath) === ".gitattributes" && (!scanScope || attributesAffectScope(scanScope, uri));
+    const matchesRules = getRules(folder).length === 0 || resolveRule(uri) !== undefined;
+    const changedDirectory: ScanScope = { label: "", targets: [{ uri, directory: true }] };
+    const knownDescendants = structural && (
+      retainedSnapshot?.attemptedUris?.some((key) => key !== uri.toString() && scopeContains(changedDirectory, vscode.Uri.parse(key))) ||
+      scanScope?.targets.some((target) => scopeContains(changedDirectory, target.uri))
+    );
+    const selected = scanScope ? scopeSelectsFile(scanScope, uri, matchesRules) : matchesRules;
+    if (!selected && !knownDescendants && !attributesChanged) return;
     const explicitFile = scanScope?.targets.some((target) => !target.directory && target.uri.toString() === uri.toString());
-    if (!explicitFile && !attributesChanged && minimatch(relativePath, exclude, { dot: true })) return;
-    if (selected || structural || attributesChanged || getRules(folder).length === 0 || resolveRule(uri)) {
+    if (!explicitFile && !knownDescendants && !attributesChanged && minimatch(relativePath, exclude, { dot: true })) return;
+    if (selected || knownDescendants || attributesChanged) {
       fileChangeRevision += 1;
       invalidateScan(true);
     }

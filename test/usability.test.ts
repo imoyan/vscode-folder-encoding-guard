@@ -431,7 +431,7 @@ test("escaped folder rules enumerate broadly and scan only matching files", asyn
   const h = await harness(t, { "legacy/[generated]/a.txt": "a\r\nb\n", "other.txt": "a\r\nb\n" });
   h.config.set("rules", [{ pattern: patternForFolder("legacy/[generated]"), encoding: "utf8" }]);
   await h.scan();
-  assert.deepEqual(h.searchPatterns, ["**/*"]);
+  assert.deepEqual(h.searchPatterns, []);
   assert.equal(h.badge("legacy/[generated]/a.txt")?.badge, "↵");
   assert.equal(h.badge("other.txt"), undefined);
 });
@@ -684,20 +684,21 @@ test("large folders expose the first 100 files without scanning or listing every
   const input = Object.fromEntries(Array.from({ length: 5101 }, (_, i) => [`file-${String(i).padStart(4, "0")}.txt`, "hello\n"]));
   const h = await harness(t, input);
   await h.command("scanSelection", h.uri(""));
-  assert.deepEqual(h.searchLimits, [101]);
+  assert.deepEqual(h.searchLimits, []);
   let rows = h.rows().filter((row) => row.contextValue === "scannedFile");
   assert.equal(rows.length, 100);
   assert.match(String(rows[0]?.description), /ASCII互換 \/ LF · 注意なし/);
   assert.equal(rows[0]?.command?.command, "vscode.open");
+  const firstLabels = rows.map((row) => row.label);
   assert.ok(h.rows().some((row) => row.label === "続きを解析（最大100件）"));
   await h.command("continueScan");
-  assert.deepEqual(h.searchLimits, [101, 201]);
+  assert.deepEqual(h.searchLimits, []);
   rows = h.rows().filter((row) => row.contextValue === "scannedFile");
   assert.equal(rows.length, 100);
-  assert.equal(rows[0]?.label, "file-0100.txt");
+  assert.ok(rows.every((row) => !firstLabels.includes(row.label)));
   assert.match(String(h.rows().find((row) => row.label === "状況")?.description), /確認済み 200 件/);
   await h.command("showFilesPage", -1);
-  assert.equal(h.rows().find((row) => row.contextValue === "scannedFile")?.label, "file-0000.txt");
+  assert.deepEqual(h.rows().filter((row) => row.contextValue === "scannedFile").map((row) => row.label), firstLabels);
   assert.deepEqual(h.messages.filter((message) => message.includes("件を超えました")), []);
 });
 
@@ -765,4 +766,49 @@ test("findings from individually added workspace roots keep their identity", asy
   const findings = h.rows().filter((row) => row.contextValue === "mixedLineEndingFinding");
   assert.deepEqual(findings.map((row) => row.label).sort(), ["left/a.txt", "right/a.txt"]);
   assert.ok(findings.every((row) => String(row.tooltip).includes(row.resourceUri!.fsPath)));
+});
+
+
+test("rules-only retained scopes ignore unmatched changes but track explicit additions", async (t) => {
+  const h = await harness(t, { "a.txt": "a\r\nb\n", "b.csv": "a\r\nb\n", "unrelated.md": "hello" });
+  h.config.set("rules", [{ pattern: "*.txt", encoding: "utf8" }]);
+  await h.scan();
+  await h.command("addScanSelection", h.uri("b.csv"));
+  h.emit("fileChange", "unrelated.md");
+  h.emit("fileCreate", "another.md");
+  assert.equal(h.badge("a.txt")?.badge, "↵");
+  assert.equal(h.badge("b.csv")?.badge, "↵");
+  h.emit("fileChange", "b.csv");
+  assert.ok(h.rows().some((row) => row.description === "変更あり・再確認が必要"));
+});
+
+test("attribute changes invalidate only ancestor or contained scopes", async (t) => {
+  const h = await harness(t, { "part/a.txt": "a\r\nb\n", "other/.gitattributes": "*.txt eol=lf" });
+  await h.command("scanSelection", h.uri("part/a.txt"));
+  h.workspace.workspaceFolders.push({ uri: h.uri("other"), name: "other", index: 1 });
+  h.emit("fileChange", "other/.gitattributes");
+  assert.equal(h.badge("part/a.txt")?.badge, "↵");
+  h.emit("fileChange", ".gitattributes");
+  assert.equal(h.badge("part/a.txt"), undefined);
+  await h.command("scanSelection", h.uri("part"));
+  h.emit("fileChange", "part/nested/.gitattributes");
+  assert.equal(h.badge("part/a.txt"), undefined);
+});
+
+test("a missing direct target loses both baselines without treating permission errors as deletion", async (t) => {
+  const h = await harness(t, { "a.txt": "日本語\n" });
+  h.config.set("rules", [{ pattern: "*.txt", encoding: "utf8" }]);
+  await h.command("scanSelection", h.uri("a.txt"));
+  const key = h.uri("a.txt").toString();
+  const originalStat = h.workspace.fs.stat;
+  h.workspace.fs.stat = async () => { throw Object.assign(new Error("denied"), { code: "EACCES" }); };
+  await h.scan();
+  for (const setting of ["encodingBaseline.v1", "lineEndingBaseline.v2"]) assert.ok((h.state.get(setting) as Record<string, unknown>)[key]);
+  h.workspace.fs.stat = originalStat;
+  await rm(h.uri("a.txt").fsPath);
+  await h.scan();
+  for (const setting of ["encodingBaseline.v1", "lineEndingBaseline.v2"]) assert.equal((h.state.get(setting) as Record<string, unknown>)[key], undefined);
+  await writeFile(h.uri("a.txt").fsPath, "別の内容\r\n");
+  await h.scan();
+  assert.ok(!h.rows().some((row) => row.contextValue?.includes("WithChange") || row.contextValue?.includes("WithLocalEol")));
 });

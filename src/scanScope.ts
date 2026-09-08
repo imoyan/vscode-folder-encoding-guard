@@ -51,3 +51,16 @@ export function scopeContains(scope: ScanScope, uri: vscode.Uri): boolean {
     return relative === "" || (relative !== ".." && !relative.startsWith(`..${path.sep}`) && !path.isAbsolute(relative));
   });
 }
+
+
+export function scopeSelectsFile(scope: ScanScope, uri: vscode.Uri, matchesRules: boolean): boolean {
+  return scope.targets.some((target) => (!target.rulesOnly || matchesRules) && scopeContains({ label: "", targets: [target] }, uri));
+}
+
+export function attributesAffectScope(scope: ScanScope, uri: vscode.Uri): boolean {
+  const directory = vscode.Uri.file(path.dirname(uri.fsPath));
+  return scope.targets.some((target) =>
+    scopeContains({ label: "", targets: [{ uri: directory, directory: true }] }, target.uri) ||
+    (target.directory && scopeContains({ label: "", targets: [target] }, uri)),
+  );
+}
