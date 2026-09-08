@@ -423,5 +423,6 @@
   "private": true,
   "bugs": {
     "url": "https://github.com/imoyan/vscode-folder-encoding-guard/issues"
-  }
+  },
+  "icon": "media/icon.png"
 }
