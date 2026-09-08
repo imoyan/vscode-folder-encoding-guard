@@ -4,6 +4,7 @@ import {
   findMatchingRule,
   normalizeRelativePath,
   patternForFolder,
+  patternForFile,
   sanitizeRules,
 } from "../src/rules.js";
 
@@ -50,4 +51,14 @@ test("drops malformed configuration entries", () => {
     ]),
     [{ pattern: "legacy/**", encoding: "shiftjis" }],
   );
+});
+
+
+test("single-file settings match only the literal selected filename", () => {
+  for (const name of ["legacy/[sample].txt", "!special.txt", "#note.txt"]) {
+    const rules = [{ pattern: patternForFile(name), encoding: "utf8bom" }];
+    assert.ok(findMatchingRule(rules, name));
+    assert.equal(findMatchingRule(rules, "other.txt"), undefined);
+    assert.equal(findMatchingRule(rules, name + "/nested.txt"), undefined);
+  }
 });

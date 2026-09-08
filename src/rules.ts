@@ -46,9 +46,13 @@ export function normalizeRelativePath(relativePath: string): string {
   return relativePath.replaceAll("\\", "/").replace(/^\.\//, "").replace(/\/$/, "");
 }
 
+export function patternForFile(relativePath: string): string {
+  return escape(normalizeRelativePath(relativePath)).replace(/^([!#])/, "\\$1");
+}
+
 export function patternForFolder(relativePath: string): string {
   const normalized = normalizeRelativePath(relativePath);
-  return normalized.length === 0 ? "**" : `${escape(normalized)}/**`;
+  return normalized.length === 0 ? "**" : `${patternForFile(normalized)}/**`;
 }
 
 // Existing entries are literal file paths. A trailing slash denotes a folder,

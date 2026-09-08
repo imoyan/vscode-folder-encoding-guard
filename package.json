@@ -1,8 +1,8 @@
 {
   "name": "folder-encoding-guard",
   "displayName": "文字コード・改行チェック",
-  "description": "フォルダーごとの文字コードルールを設定し、文字コード・改行の不一致や変更を確認。選択したファイルをまとめて変換できます。",
-  "version": "0.9.0",
+  "description": "ファイル／フォルダーごとの期待する文字コードを設定し、文字コード・改行の不一致や変更を確認。選択したファイルをまとめて変換できます。",
+  "version": "0.10.0",
   "publisher": "yusuke-local",
   "license": "MIT",
   "repository": {
@@ -119,6 +119,16 @@
         "command": "folderEncodingGuard.acknowledgeLineEndingChange",
         "title": "文字コード・改行チェック: この改行変更を確認済みにする",
         "icon": "$(check)"
+      },
+      {
+        "command": "folderEncodingGuard.configureFile",
+        "title": "文字コード・改行チェック: このファイルの文字コードを設定",
+        "icon": "$(settings-gear)"
+      },
+      {
+        "command": "folderEncodingGuard.scanSelection",
+        "title": "文字コード・改行チェック: 範囲を選んで解析",
+        "icon": "$(search)"
       }
     ],
     "configuration": {
@@ -248,6 +258,16 @@
           "command": "folderEncodingGuard.convertFolder",
           "when": "resourceScheme == file && explorerResourceIsFolder",
           "group": "7_modification@51"
+        },
+        {
+          "command": "folderEncodingGuard.configureFile",
+          "when": "resourceScheme == file && !explorerResourceIsFolder",
+          "group": "7_modification@50"
+        },
+        {
+          "command": "folderEncodingGuard.scanSelection",
+          "when": "resourceScheme == file",
+          "group": "7_modification@49"
         }
       ],
       "editor/title/context": [
@@ -259,8 +279,13 @@
       ],
       "view/title": [
         {
-          "command": "folderEncodingGuard.refresh",
+          "command": "folderEncodingGuard.scanSelection",
           "when": "view == folderEncodingGuard.rulesView && !folderEncodingGuard.scanning",
+          "group": "navigation@1"
+        },
+        {
+          "command": "folderEncodingGuard.refresh",
+          "when": "view == folderEncodingGuard.rulesView && !folderEncodingGuard.scanning && folderEncodingGuard.hasScanScope",
           "group": "navigation"
         }
       ],

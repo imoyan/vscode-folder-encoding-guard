@@ -105,3 +105,29 @@ test("file-backed UNC storage reaches filesystem containment checks", async () =
   assert.equal(await backup.isConversionBackupSession({ ...root, scheme: "vscode-userdata" }, { ...session, scheme: "vscode-userdata" }), false);
   assert.equal(checks, 1);
 });
+
+test("reopening a comparison side preserves both URIs and labels their encodings", async () => {
+  const uri = (value: string, scheme: string) => ({ scheme, fsPath: value, toString: () => `${scheme}:${value}` });
+  const original = uri("/a.txt", "git");
+  const modified = uri("/a.txt", "file");
+  class Diff { constructor(public original: unknown, public modified: unknown) {} }
+  const input = new Diff(original, modified);
+  const documents = [{ uri: original, encoding: "shiftjis", isDirty: false }, { uri: modified, encoding: "utf8", isDirty: false }];
+  const calls: unknown[][] = [];
+  const editor = loadModule<{ reopenWithExpectedEncoding(document: unknown, match: unknown): Promise<void>; updateStatus(status: unknown, document: unknown): void; diagnosticFor(document: unknown): unknown }>("editorEncoding.ts", {
+    "node:path": path, "./scanCore.js": {}, "./fileLimits.js": {}, "./stableResourceRead.js": {}, "./workspaceRules.js": {},
+    "./rules.js": { encodingInfo: (id: string) => ({ label: id }) },
+    vscode: { TabInputTextDiff: Diff, workspace: { textDocuments: documents, openTextDocument: async (selected: unknown, options: { encoding: string }) => {
+      const doc = documents.find((entry) => entry.uri === selected)!; doc.encoding = options.encoding; return doc;
+    } }, window: { tabGroups: { activeTabGroup: { activeTab: { input } } }, showTextDocument: () => { throw new Error("must keep comparison"); }, showErrorMessage: (error: string) => { throw new Error(error); } }, commands: { executeCommand: async (...args: unknown[]) => { calls.push(args); } } },
+  });
+  await editor.reopenWithExpectedEncoding(documents[1], { rule: { encoding: "utf8bom" } });
+  assert.equal(calls[0]?.[0], "vscode.diff");
+  assert.equal(calls[0]?.[1], original);
+  assert.equal(calls[0]?.[2], modified);
+  assert.match(String(calls[0]?.[3]), /左 Git版: shiftjis \/ 右 作業中: utf8bom/);
+  const status = { text: "", show() {} };
+  editor.updateStatus(status, documents[1]);
+  assert.match(status.text, /左 Git版: shiftjis \/ 右 作業中: utf8bom/);
+  assert.equal(editor.diagnosticFor(documents[0]), undefined);
+});

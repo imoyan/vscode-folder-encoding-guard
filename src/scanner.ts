@@ -1,3 +1,4 @@
+import type { ScanScope } from "./scanScope.js";
 import * as path from "node:path";
 import * as vscode from "vscode";
 import {
@@ -61,6 +62,7 @@ export interface EncodingSummary {
 
 export interface EncodingScanSnapshot {
   readonly completedAt: Date;
+  readonly scopeLabel?: string;
   readonly scannedCount: number;
   readonly skippedCount: number;
   readonly skippedFiles?: readonly { uri: vscode.Uri; displayPath: string; reason: string }[];
@@ -115,8 +117,9 @@ export class WorkspaceEncodingScanner {
     isCurrent: () => boolean = () => true,
     cancellationToken?: vscode.CancellationToken,
     onUserCancellation: () => void = () => undefined,
+    scope?: ScanScope,
   ): Promise<EncodingScanSnapshot | undefined> {
-    const folders = vscode.workspace.workspaceFolders ?? [];
+    const folders = (vscode.workspace.workspaceFolders ?? []).filter((folder) => !scope || scope.targets.some(({ uri }) => vscode.workspace.getWorkspaceFolder(uri)?.uri.toString() === folder.uri.toString()));
     if (folders.length === 0) {
       void vscode.window.showInformationMessage(
         "文字コードを確認するワークスペースを開いてください。",
@@ -163,7 +166,8 @@ export class WorkspaceEncodingScanner {
             }
             const rules = this.patternsFor(folder);
             // Enumerate with VS Code syntax, then apply the shared minimatch rule matcher.
-            const patterns = ["**/*"];
+            const targets = scope?.targets.filter(({ uri }) => vscode.workspace.getWorkspaceFolder(uri)?.uri.toString() === folder.uri.toString())
+              ?? [{ uri: folder.uri, directory: true }];
             const config = this.configurationFor(folder.uri);
             const maxFiles = config.get<number>("maxScanFiles", 5000);
             const maxSize = configuredFileSizeLimit(
@@ -174,15 +178,15 @@ export class WorkspaceEncodingScanner {
               DEFAULT_SCAN_EXCLUDE,
             );
             const folderResources = new Map<string, vscode.Uri>();
-            for (const pattern of patterns) {
+            for (const target of targets) {
               let uris: readonly vscode.Uri[];
               try {
-                uris = await vscode.workspace.findFiles(
-                  new vscode.RelativePattern(folder, pattern),
+                uris = target.directory ? await vscode.workspace.findFiles(
+                  new vscode.RelativePattern(target.uri, "**/*"),
                   exclude,
                   maxFiles + 1,
                   token,
-                );
+                ) : [target.uri];
               } catch (error) {
                 if (token.isCancellationRequested || !isCurrent()) {
                   return undefined;
@@ -204,7 +208,7 @@ export class WorkspaceEncodingScanner {
                 if (!owner || owner.uri.toString() !== folder.uri.toString()) {
                   continue;
                 }
-                if (rules.length > 0 && this.expectedEncodingFor(uri) === undefined) continue;
+                if (!scope && rules.length > 0 && this.expectedEncodingFor(uri) === undefined) continue;
                 folderResources.set(uri.toString(), uri);
                 if (folderResources.size > maxFiles) {
                   void vscode.window.showErrorMessage(
@@ -273,10 +277,10 @@ export class WorkspaceEncodingScanner {
             comparisonResources.map((resource) => resource.uri.toString()),
           );
           const nextLineEndings = new Map(
-            [...previousLineEndings].filter(([key]) => resourceKeys.has(key)),
+            [...previousLineEndings].filter(([key]) => scope !== undefined || resourceKeys.has(key)),
           );
           const nextEncodings = new Map(
-            [...previousEncodings].filter(([key]) => resourceKeys.has(key)),
+            [...previousEncodings].filter(([key]) => scope !== undefined || resourceKeys.has(key)),
           );
           const scanResourceKeys = new Set(
             scanResources.map((resource) => resource.uri.toString()),
@@ -560,6 +564,7 @@ export class WorkspaceEncodingScanner {
           }
           return {
             completedAt: new Date(),
+            scopeLabel: scope?.label,
             scannedCount,
             skippedCount: skippedFiles.length,
             skippedFiles,

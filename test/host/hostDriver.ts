@@ -4,14 +4,21 @@ import assert from "node:assert/strict";
 interface PickResponse { title: string; label?: string; all?: boolean; cancel?: boolean }
 export const picks: PickResponse[] = [];
 export const confirmations: string[] = [];
+export const nonModalResponses: string[] = [];
 export const errors: string[] = [];
 export const expectedErrors: string[] = [];
 export const notices: string[] = [];
+export const statusItems: vscode.StatusBarItem[] = [];
 export const providers = new Map<string, vscode.TreeDataProvider<unknown>>();
 
 // Only human input is substituted. Files, Git, settings, command registration,
 // tree items and Extension Host execution remain the actual VS Code APIs.
 const windowOverrides: Partial<typeof vscode.window> = {
+  createStatusBarItem: ((alignment: vscode.StatusBarAlignment, priority?: number) => {
+    const status = vscode.window.createStatusBarItem(alignment, priority);
+    statusItems.push(status);
+    return status;
+  }) as typeof vscode.window.createStatusBarItem,
   showQuickPick: (async (
     offered: readonly vscode.QuickPickItem[] | Thenable<readonly vscode.QuickPickItem[]>,
     options: vscode.QuickPickOptions,
@@ -36,6 +43,7 @@ const windowOverrides: Partial<typeof vscode.window> = {
       assert.ok(args.includes(response), `Missing confirmation: ${response}`);
       return response;
     }
+    if (nonModalResponses[0] && args.includes(nonModalResponses[0])) return nonModalResponses.shift();
     return undefined;
   }) as typeof vscode.window.showWarningMessage,
   showInformationMessage: (async (message: string) => { notices.push(message); return undefined; }) as typeof vscode.window.showInformationMessage,

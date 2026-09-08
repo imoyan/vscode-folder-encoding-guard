@@ -73,16 +73,18 @@ async function harness(t: TestContext, input: Record<string, string | Uint8Array
   const disposable = { dispose() {} };
   const workspace = {
     workspaceFolders: [folder], textDocuments: [] as unknown[],
+    asRelativePath: (uri: Uri) => path.relative(root, uri.fsPath),
     getWorkspaceFolder: (uri: Uri) => (uri.fsPath === root || uri.fsPath.startsWith(root + path.sep)) ? folder : undefined,
     getConfiguration: () => ({ get: (key: string, fallback?: unknown) => config.get(key) ?? fallback,
       update: async (key: string, value: unknown) => {
         config.set(key, value); events.get("configuration")?.fire({ affectsConfiguration: () => true });
       },
     }),
-    findFiles: async (pattern: { pattern: string }, exclude: string, limit: number) => { searchPatterns.push(pattern.pattern); return Object.keys(input)
+    findFiles: async (pattern: { pattern: string; base?: Uri | { uri: Uri } }, exclude: string, limit: number) => { searchPatterns.push(pattern.pattern); return Object.keys(input)
+      .filter((name) => { const base = pattern.base && ("uri" in pattern.base ? pattern.base.uri : pattern.base); return !base || path.join(root, name).startsWith(base.fsPath + path.sep); })
       .filter((name) => minimatch(name, pattern.pattern, { dot: true }) && !minimatch(name, exclude, { dot: true }))
       .slice(0, limit).map((name) => Uri.file(path.join(root, name))); },
-    fs: { stat: async (uri: Uri) => { const s = await stat(uri.fsPath); return { type: 1, size: s.size }; } },
+    fs: { stat: async (uri: Uri) => { const s = await stat(uri.fsPath); return { type: s.isDirectory() ? 2 : 1, size: s.size }; } },
     decode: async (bytes: Uint8Array, options: { encoding: string }) => {
       duringDecode?.();
       if (options.encoding !== "utf8" && options.encoding !== "utf8bom") throw new Error("unsupported fixture encoding");
@@ -123,7 +125,7 @@ async function harness(t: TestContext, input: Record<string, string | Uint8Array
     TreeItem: class { constructor(public label: string) {} },
     ThemeIcon: class {}, ThemeColor: class {}, MarkdownString: class {},
     TreeItemCollapsibleState: { None: 0, Expanded: 2 },
-    StatusBarAlignment: { Right: 2 }, ProgressLocation: { Notification: 15 }, FileType: { File: 1 }, ConfigurationTarget: { WorkspaceFolder: 3 },
+    StatusBarAlignment: { Right: 2 }, ProgressLocation: { Notification: 15 }, FileType: { File: 1, Directory: 2 }, ConfigurationTarget: { WorkspaceFolder: 3 },
     extensions: { getExtension: () => undefined },
     languages: { createDiagnosticCollection: () => ({ ...disposable, set() {}, delete() {} }) },
     commands: {
@@ -217,7 +219,7 @@ test("current file inspection reports mixed endings from unsaved text", async (t
   h.edit("a.txt", "edited\r\ntext\n");
   await h.runtime.inspectActiveFile();
   assert.match(h.messages.at(-1)!, /改行混在: LF \/ CRLF（未保存の編集内容）/);
-  assert.match(h.messages.at(-1)!, /フォルダールールはありません/);
+  assert.match(h.messages.at(-1)!, /文字コード設定はありません/);
   assert.ok(h.rows().some((row) => row.description === "変更あり・再確認が必要"));
 });
 
@@ -460,4 +462,52 @@ test("legacy save enforcement warns without rewriting successive saves", async (
   await h.save("a.txt", "newest");
   assert.equal(await readFile(h.uri("a.txt").fsPath, "utf8"), "newest");
   assert.equal(h.messages.filter((message) => message.startsWith("保存注意:")).length, 2);
+});
+
+
+test("file settings override a folder setting without changing sibling files", async (t) => {
+  const h = await harness(t, { "one.txt": "a", "two.txt": "b" });
+  h.config.set("rules", [{ pattern: "**/*", encoding: "utf8" }]);
+  h.picks.push({ encoding: "utf8bom", label: "UTF-8 with BOM" });
+  await h.command("configureFile", h.uri("one.txt"));
+  assert.equal(h.badge("one.txt")?.badge, "UB");
+  assert.equal(h.badge("two.txt")?.badge, "U8");
+  assert.ok(h.rows().some((row) => row.label === "期待する文字コード"));
+  assert.ok(!h.rows().some((row) => /[0-9]位/.test(String(row.description))));
+});
+
+test("scoped scans avoid whole-workspace enumeration and retain other baselines", async (t) => {
+  const h = await harness(t, { "part/a.txt": "a\n", "other/b.txt": "b\n" });
+  h.config.set("rules", [{ pattern: "**/*", encoding: "utf8" }]);
+  await h.scan();
+  const before = JSON.stringify((h.state.get("encodingBaseline.v1") as Record<string, unknown>)[h.uri("other/b.txt").toString()]);
+  h.searchPatterns.length = 0;
+  await h.command("scanSelection", h.uri("part/a.txt"));
+  assert.deepEqual(h.searchPatterns, []);
+  assert.equal(JSON.stringify((h.state.get("encodingBaseline.v1") as Record<string, unknown>)[h.uri("other/b.txt").toString()]), before);
+  assert.ok(h.rows().some((row) => row.label === "今回の解析: part/a.txt"));
+  await h.command("scanSelection", h.uri("part"));
+  assert.ok(h.rows().some((row) => row.label === "文字コード: ASCII互換" && row.description === "1 件"));
+  await h.scan();
+  assert.ok(h.rows().some((row) => row.label === "今回の解析: part/ 以下"));
+});
+
+
+test("selected unconfigured files invalidate on changes without reacting to unrelated files", async (t) => {
+  const h = await harness(t, { "chosen.txt": "a\r\nb\n", "other.txt": "other" });
+  h.config.set("rules", [{ pattern: "other.txt", encoding: "utf8" }]);
+  await h.command("scanSelection", h.uri("chosen.txt"));
+  assert.equal(h.badge("chosen.txt")?.badge, "↵");
+  h.emit("fileChange", "other.txt");
+  assert.equal(h.badge("chosen.txt")?.badge, "↵");
+  h.emit("fileChange", "chosen.txt");
+  assert.equal(h.badge("chosen.txt"), undefined);
+  assert.ok(h.rows().some((row) => row.label === "今回の解析: chosen.txt"));
+});
+
+test("cancelling the scope picker does not start a whole-workspace scan", async (t) => {
+  const h = await harness(t, { "a.txt": "a" });
+  h.picks.push(undefined);
+  await h.command("scanSelection");
+  assert.deepEqual(h.searchPatterns, []);
 });

@@ -1,3 +1,4 @@
+import { scopeContains, selectScanScope, type ScanScope } from "./scanScope.js";
 import * as path from "node:path";
 import * as vscode from "vscode";
 import { minimatch } from "minimatch";
@@ -72,6 +73,8 @@ export function activate(context: vscode.ExtensionContext): void {
   let scanHasResult = false;
   let fileChangeRevision = 0;
   let scanCancelledByUser = false;
+  let scanScope: ScanScope | undefined;
+  let choosingScope = false;
 
   const invalidateScan = (changed = false): void => {
     scanRevision += 1;
@@ -97,6 +100,7 @@ export function activate(context: vscode.ExtensionContext): void {
           () => revision === scanRevision,
           cancellation.token,
           () => { scanCancelledByUser = true; },
+          scanScope,
         );
         if (snapshot && revision === scanRevision) {
           scanHasResult = true;
@@ -144,8 +148,10 @@ export function activate(context: vscode.ExtensionContext): void {
       DEFAULT_SCAN_EXCLUDE);
     // Git attributes affect comparisons even when the file itself has no encoding rule.
     const attributesChanged = path.basename(uri.fsPath) === ".gitattributes";
-    if (!attributesChanged && minimatch(relativePath, exclude, { dot: true })) return;
-    if (structural || attributesChanged || getRules(folder).length === 0 || resolveRule(uri)) {
+    const selected = scanScope && scopeContains(scanScope, uri);
+    if (scanScope && !selected && !attributesChanged) return;
+    if (!scanScope && !attributesChanged && minimatch(relativePath, exclude, { dot: true })) return;
+    if (selected || structural || attributesChanged || getRules(folder).length === 0 || resolveRule(uri)) {
       fileChangeRevision += 1;
       invalidateScan(true);
     }
@@ -166,6 +172,7 @@ export function activate(context: vscode.ExtensionContext): void {
   };
 
   const ensureExpectedEncoding = async (document: vscode.TextDocument): Promise<void> => {
+    if (document.uri.scheme === "git") { updateDocumentState(document); return; }
     const match = resolveRule(document.uri);
     if (!match || isDocumentEncodingMatch(document, match)) {
       updateDocumentState(document);
@@ -205,7 +212,7 @@ export function activate(context: vscode.ExtensionContext): void {
     const action = "期待値で開き直す";
     const selected = await vscode.window.showWarningMessage(
       `${path.basename(document.fileName)} は ${encodingInfo(document.encoding).label} で開かれています。` +
-        `フォルダールールは ${encodingInfo(match.rule.encoding).label} です。`,
+        `文字コード設定は ${encodingInfo(match.rule.encoding).label} です。`,
       action,
     );
     if (selected === action) {
@@ -227,6 +234,20 @@ export function activate(context: vscode.ExtensionContext): void {
         settingsQueue,
       ),
     ),
+    vscode.commands.registerCommand("folderEncodingGuard.configureFile", (uri?: vscode.Uri) => configureFolder(uri, rulesProvider, decorationProvider, settingsQueue, true)),
+    vscode.commands.registerCommand("folderEncodingGuard.scanSelection", async (uri?: vscode.Uri, selected?: readonly vscode.Uri[]) => {
+      if (choosingScope || scanCancellation) return;
+      choosingScope = true;
+      try {
+        const scope = await selectScanScope(uri, selected);
+        if (!scope) return;
+        scanScope = scope === "workspace" ? undefined : scope;
+        rulesProvider.setScope(scanScope?.label);
+        await vscode.commands.executeCommand("setContext", "folderEncodingGuard.hasScanScope", true);
+        invalidateScan();
+        await runScan();
+      } finally { choosingScope = false; }
+    }),
     vscode.commands.registerCommand("folderEncodingGuard.inspectActiveFile", inspectActiveFile),
     vscode.commands.registerCommand(
       "folderEncodingGuard.convertFolder",
@@ -358,7 +379,7 @@ export function activate(context: vscode.ExtensionContext): void {
         if (config.get("warnOnSave", true) || config.get("enforceOnSave", false)) {
           void vscode.window.showErrorMessage(
             `保存注意: ${path.basename(event.document.fileName)} は ${encodingInfo(event.document.encoding).label}、` +
-              `フォルダールールは ${encodingInfo(match.rule.encoding).label} です。`,
+              `文字コード設定は ${encodingInfo(match.rule.encoding).label} です。`,
           );
         }
       }
@@ -378,6 +399,7 @@ export function activate(context: vscode.ExtensionContext): void {
   );
 
   void vscode.commands.executeCommand("setContext", "folderEncodingGuard.scanning", false);
+  void vscode.commands.executeCommand("setContext", "folderEncodingGuard.hasScanScope", false);
   void conversionManager.notifyProtectedConversion().then(undefined, () => undefined);
 
   vscode.workspace.textDocuments.forEach((document) => void ensureExpectedEncoding(document));

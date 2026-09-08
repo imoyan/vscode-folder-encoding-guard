@@ -1,24 +1,35 @@
 import * as path from "node:path";
 import * as vscode from "vscode";
 import type { SerialTaskQueue } from "./coalescingTask.js";
-import { ENCODINGS, EncodingRule, patternForFolder } from "./rules.js";
+import { ENCODINGS, EncodingRule, patternForFolder, patternForFile } from "./rules.js";
 import type { RuleItem, RulesProvider, EncodingDecorationProvider } from "./encodingView.js";
 import { RULES_SETTING, configurationFor, getRules, relativePathFor } from "./workspaceRules.js";
 
+let configuring = false;
+
 export async function configureFolder(
+  uri: vscode.Uri | undefined, rules: RulesProvider, decorations: EncodingDecorationProvider, queue: SerialTaskQueue, fileOnly = false,
+): Promise<void> {
+  if (configuring) return;
+  configuring = true;
+  try { await configureTarget(uri, rules, decorations, queue, fileOnly); } finally { configuring = false; }
+}
+
+async function configureTarget(
   suppliedUri: vscode.Uri | undefined,
   rulesProvider: RulesProvider,
   decorationProvider: EncodingDecorationProvider,
   settingsQueue: SerialTaskQueue,
+  fileOnly = false,
 ): Promise<void> {
   let uri = suppliedUri;
   if (!uri) {
     const selected = await vscode.window.showOpenDialog({
-      canSelectFiles: false,
-      canSelectFolders: true,
+      canSelectFiles: fileOnly,
+      canSelectFolders: !fileOnly,
       canSelectMany: false,
       openLabel: "文字コードを設定",
-      title: "対象フォルダーを選択",
+      title: fileOnly ? "設定するファイルを選択" : "対象フォルダーを選択",
     });
     uri = selected?.[0];
   }
@@ -26,6 +37,14 @@ export async function configureFolder(
     return;
   }
 
+  if (fileOnly) {
+    try {
+      if ((await vscode.workspace.fs.stat(uri)).type !== vscode.FileType.File) throw new Error();
+    } catch {
+      void vscode.window.showErrorMessage("通常のファイルを選択してください。");
+      return;
+    }
+  }
   const folder = vscode.workspace.getWorkspaceFolder(uri);
   if (!folder) {
     void vscode.window.showErrorMessage("開いているワークスペース内のフォルダーを選択してください。");
@@ -50,14 +69,14 @@ export async function configureFolder(
     })),
     {
       title: `${relativePath || folder.name} の文字コード`,
-      placeHolder: "このフォルダー以下で使う文字コードを選択",
+      placeHolder: fileOnly ? "このファイルだけに適用する文字コードを選択" : "このフォルダー以下で使う文字コードを選択",
     },
   );
   if (!choice) {
     return;
   }
 
-  const pattern = patternForFolder(relativePath);
+  const pattern = fileOnly ? patternForFile(relativePath) : patternForFolder(relativePath);
   await settingsQueue.run(async () => {
     const currentRules = getRules(folder);
     const nextRules = [...currentRules];
@@ -73,7 +92,7 @@ export async function configureFolder(
   rulesProvider.refresh();
   decorationProvider.refresh();
   void vscode.window.showInformationMessage(
-    `${relativePath || folder.name} 以下を ${choice.label} として登録しました。`,
+    `${relativePath || folder.name}${fileOnly ? " だけ" : " 以下"}を ${choice.label} として登録しました。`,
   );
 }
 

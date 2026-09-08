@@ -21,9 +21,9 @@ export class RuleItem extends vscode.TreeItem {
   ) {
     super(rule.pattern, vscode.TreeItemCollapsibleState.None);
     const info = encodingInfo(rule.encoding);
-    this.description = `${ruleIndex + 1}位 · ${folder.name} · ${info.label}`;
+    this.description = `${info.label} · ${folder.name}`;
     this.tooltip = new vscode.MarkdownString(
-      `**${folder.name}**\n\nPattern: \`${rule.pattern}\`\n\nEncoding: **${info.label}**`,
+      `**${folder.name}**\n\n対象: \`${rule.pattern}\`\n\n期待する文字コード: **${info.label}**\n\n適用順: ${ruleIndex + 1}番目。複数に一致するときは、一覧の上にある設定を優先します。`,
     );
     this.iconPath = new vscode.ThemeIcon("symbol-text");
   }
@@ -213,6 +213,9 @@ export class RulesProvider implements vscode.TreeDataProvider<ViewItem> {
   public readonly onDidChangeTreeData = this.changed.event;
   private snapshot: EncodingScanSnapshot | undefined;
   private needsRescan = false;
+  private scopeLabel: string | undefined;
+
+  public setScope(label: string | undefined): void { this.scopeLabel = label; this.refresh(); }
 
   public refresh(): void {
     this.changed.fire(undefined);
@@ -220,6 +223,7 @@ export class RulesProvider implements vscode.TreeDataProvider<ViewItem> {
 
   public setSnapshot(snapshot: EncodingScanSnapshot | undefined): void {
     this.snapshot = snapshot;
+    this.scopeLabel = snapshot?.scopeLabel;
     this.needsRescan = false;
     this.refresh();
   }
@@ -247,8 +251,8 @@ export class RulesProvider implements vscode.TreeDataProvider<ViewItem> {
         (count, folder) => count + getAllowedMixedLineEndings(folder).length, 0,
       );
       return [
-        new GroupItem("scope", "確認範囲", "除外・上限あり"),
-        new GroupItem("rules", "ルール", `${ruleCount} 件`),
+        new GroupItem("scope", "確認範囲", this.scopeLabel ?? "範囲を選んで解析できます"),
+        new GroupItem("rules", "期待する文字コード", `${ruleCount} 件 · 上の設定を優先`),
         new GroupItem("summary", "状況", statusDescription),
         new GroupItem("findings", "要注意", this.snapshot ? `${this.snapshot.findings.length} 件` : "未確認"),
         ...(this.snapshot?.skippedCount ? [new GroupItem("skipped", "未確認の内訳", `${this.snapshot.skippedCount} 件`)] : []),
@@ -259,6 +263,7 @@ export class RulesProvider implements vscode.TreeDataProvider<ViewItem> {
       return [];
     }
     if (item.kind === "scope") {
+      if (this.scopeLabel) return [new MessageItem(`今回の解析: ${this.scopeLabel}`)];
       return (vscode.workspace.workspaceFolders ?? []).map((folder) => {
         const rules = getRules(folder);
         const config = configurationFor(folder.uri);
@@ -283,12 +288,12 @@ export class RulesProvider implements vscode.TreeDataProvider<ViewItem> {
       );
       return rules.length > 0
         ? rules
-        : [new MessageItem("更新ボタンで確認できます。期待値の比較はフォルダーを右クリックしてルールを設定")];
+        : [new MessageItem("ファイル／フォルダーを右クリックして、期待する文字コードを設定できます")];
     }
     if (!this.snapshot) {
       return [new MessageItem(this.needsRescan
         ? "ファイルが変更されました。更新ボタンで再確認してください"
-        : "更新ボタンで文字コード・改行を確認（ルール未設定でも利用できます）")];
+        : "「範囲を選んで解析」で1ファイルから確認できます（設定は任意）")];
     }
     const snapshot = this.snapshot;
     if (item.kind === "skipped") {
