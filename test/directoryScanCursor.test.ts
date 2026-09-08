@@ -60,3 +60,41 @@ test("directory-only trees have bounded metadata work and release their open han
   await h.cursor.dispose();
   assert.equal(h.stats().closes, 1);
 });
+
+test("permission failures skip one subtree and remain replayable until committed", async () => {
+  let rootRead = 0;
+  const cursor = new DirectoryScanCursor("/root", () => false, async directory => {
+    if (directory.endsWith("/locked")) throw Object.assign(new Error("denied"), { code: "EACCES" });
+    let index = 0;
+    return { close: async () => {}, read: async () => {
+      if (directory === "/root") {
+        const name = ["healthy", "locked"][rootRead++];
+        return name ? { name, isDirectory: () => true } as Dirent : null;
+      }
+      return index++ === 0 ? { name: "a.txt", isDirectory: () => false, isFile: () => true } as Dirent : null;
+    } };
+  });
+  try {
+    const page = await cursor.peek(100, () => false);
+    assert.deepEqual(page.paths, ["/root/healthy/a.txt"]);
+    assert.deepEqual(page.unreadable, ["/root/locked"]);
+    assert.equal(page.complete, true);
+    assert.deepEqual(await cursor.peek(100, () => false), page);
+    cursor.commit(page.paths.length);
+    assert.deepEqual((await cursor.peek(100, () => false)).unreadable, []);
+  } finally { await cursor.dispose(); }
+});
+
+test("permission lost while reading a directory closes it and marks the subtree unconfirmed", async () => {
+  let closed = 0;
+  const cursor = new DirectoryScanCursor("/root", () => false, async () => ({
+    read: async () => { throw Object.assign(new Error("denied"), { code: "EPERM" }); },
+    close: async () => { closed++; },
+  }));
+  try {
+    const page = await cursor.peek(100, () => false);
+    assert.equal(page.complete, true);
+    assert.deepEqual(page.unreadable, ["/root"]);
+    assert.equal(closed, 1);
+  } finally { await cursor.dispose(); }
+});

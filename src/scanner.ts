@@ -82,11 +82,12 @@ export interface EncodingScanSnapshot {
   readonly headVerifications?: GitInspectionResult["headVerifications"];
   readonly checkedUris?: readonly string[];
   readonly attemptedUris?: readonly string[];
+  readonly unreadableDirectories?: readonly string[];
   readonly completedAt: Date;
   readonly scopeLabel?: string;
   readonly scannedCount: number;
   readonly skippedCount: number;
-  readonly skippedFiles?: readonly { uri: vscode.Uri; displayPath: string; reason: string }[];
+  readonly skippedFiles?: readonly { uri: vscode.Uri; displayPath: string; reason: string; directory?: boolean }[];
   readonly summaries: readonly EncodingSummary[];
   readonly lineEndingSummaries: readonly EncodingSummary[];
   readonly findings: readonly ScanFinding[];
@@ -191,6 +192,9 @@ export class WorkspaceEncodingScanner {
           const alternativeEncodings = this.candidateEncodings();
           const unconfiguredCandidates = ENCODINGS.map((encoding) => encoding.id);
           const resources: ScanResource[] = [];
+          const attemptedDirectories = new Set<string>();
+          const unreadableResources: ScanResource[] = [];
+          const unreadableDirectories = new Set(previousPage?.unreadableDirectories);
           const seen = new Set<string>();
           const cursors = new Map<string, ScanPageCursor>();
           const commits: Array<{ reader: DirectoryScanCursor; count: number }> = [];
@@ -236,6 +240,12 @@ export class WorkspaceEncodingScanner {
                   createdReaders.add(reader);
                 }
                 const result = await reader.peek(remaining, () => token.isCancellationRequested || !isCurrent());
+                for (const directory of result.attemptedDirectories) attemptedDirectories.add(vscode.Uri.file(directory).toString());
+                for (const directory of result.unreadable) {
+                  const uri = vscode.Uri.file(directory);
+                  unreadableResources.push({ uri, folder, maxSize });
+                  unreadableDirectories.add(uri.toString());
+                }
                 page = result.paths.map((entry) => vscode.Uri.file(entry));
                 complete = result.complete;
                 commits.push({ reader, count: page.length });
@@ -270,10 +280,11 @@ export class WorkspaceEncodingScanner {
           const missingKeys = new Set<string>();
           const preparedResources: PreparedScanResource[] = [];
           const scanResources: PreparedScanResource[] = [];
-          const skippedFiles: { uri: vscode.Uri; displayPath: string; reason: string }[] = [];
-          const skip = (resource: ScanResource, reason: string): void => {
-            skippedFiles.push({ uri: resource.uri, displayPath: scanDisplayPath(resource), reason });
+          const skippedFiles: { uri: vscode.Uri; displayPath: string; reason: string; directory?: boolean }[] = [];
+          const skip = (resource: ScanResource, reason: string, directory = false): void => {
+            skippedFiles.push({ uri: resource.uri, displayPath: scanDisplayPath(resource), reason, directory });
           };
+          for (const resource of unreadableResources) skip(resource, "フォルダーを読み取れません（配下は未確認）", true);
           for (const resource of resources) {
             if (token.isCancellationRequested || !isCurrent()) {
               return undefined;
@@ -308,8 +319,12 @@ export class WorkspaceEncodingScanner {
             comparisonResources.map((resource) => resource.uri.toString()),
           );
           const priorResources = new Set(previousPage?.attemptedUris);
+          const unreadableScope: ScanScope = { label: "", targets: [...unreadableDirectories].map(directory => ({ uri: vscode.Uri.parse(directory), directory: true })) };
           const retainBaseline = (key: string): boolean => {
             if (missingKeys.has(key)) return false;
+            try {
+              if (scopeContains(unreadableScope, vscode.Uri.parse(key))) return true;
+            } catch { /* Preserve the existing handling of malformed baseline keys below. */ }
             if (hasMore || resourceKeys.has(key) || alreadyChecked.has(key) || priorResources.has(key)) return true;
             if (!scope) return false;
             try { return !scopeContains(scope, vscode.Uri.parse(key)); }
@@ -604,10 +619,10 @@ export class WorkspaceEncodingScanner {
           committed = true;
           const checkedSet = new Set(checkedUris);
           return {
-            pageCursors, hasMore, files,
+            pageCursors, hasMore, files, unreadableDirectories: [...unreadableDirectories],
             headVerifications: gitInspection.headVerifications,
             checkedUris,
-            attemptedUris: resources.map(({ uri }) => uri.toString()),
+            attemptedUris: [...new Set([...resources, ...unreadableResources].map(({ uri }) => uri.toString()).concat([...attemptedDirectories]))],
             completedAt: new Date(),
             scopeLabel: scope?.label,
             scannedCount,

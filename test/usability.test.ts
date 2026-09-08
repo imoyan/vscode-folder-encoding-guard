@@ -58,6 +58,7 @@ async function harness(t: TestContext, input: Record<string, string | Uint8Array
   const config = new Map<string, unknown>();
   const configFailures: string[] = [];
   const state = new Map<string, unknown>();
+  const unreadableDirectories = new Set<string>();
   const messages: string[] = [];
   const picks: unknown[] = [];
   const confirmations: string[] = [];
@@ -140,7 +141,15 @@ async function harness(t: TestContext, input: Record<string, string | Uint8Array
   const module = { exports: {} };
   const nativeRequire = createRequire(path.join(process.cwd(), "package.json"));
   runInNewContext((await bundle).outputFiles[0]!.text, {
-    module, exports: module.exports, require: (id: string) => id === "vscode" ? vscode : nativeRequire(id),
+    module, exports: module.exports, require: (id: string) => {
+      if (id === "vscode") return vscode;
+      const native = nativeRequire(id);
+      if (id !== "node:fs/promises") return native;
+      return { ...native, opendir: async (directory: string, options: unknown) => {
+        if (unreadableDirectories.has(path.relative(root, directory))) throw Object.assign(new Error("denied"), { code: "EACCES" });
+        return native.opendir(directory, options);
+      } };
+    },
     Buffer, process, console, setTimeout, clearTimeout, URL, TextEncoder, TextDecoder,
   });
   const runtime = module.exports as Runtime;
@@ -151,7 +160,7 @@ async function harness(t: TestContext, input: Record<string, string | Uint8Array
   subscriptions.push(provider!.onDidChangeTreeData(() => { treeChanges++; }), decorations!.onDidChangeFileDecorations(() => { decorationChanges++; }));
   t.after(() => subscriptions.forEach((item) => item.dispose()));
   return {
-    config, configFailures, state, messages, window, workspace, runtime, picks, confirmations, information, shownPicks, searchPatterns, searchLimits,
+    config, configFailures, state, unreadableDirectories, messages, window, workspace, runtime, picks, confirmations, information, shownPicks, searchPatterns, searchLimits,
     changes: () => ({ tree: treeChanges, decorations: decorationChanges }),
     command: (name: string, ...args: unknown[]) => commands.get(`folderEncodingGuard.${name}`)!(...args),
     selection: () => runtime.selectConversion(context, () => undefined,
@@ -824,4 +833,23 @@ test("adding an unconfigured page does not reset an existing Git warning signatu
   assert.equal(h.state.get("gitRuleWarningState.v1"), signature);
   await h.scan();
   assert.equal(warnings().length, 1);
+});
+
+test("unreadable subtrees stay unconfirmed, preserve baselines and allow other files to finish", async t => {
+  const h = await harness(t, { "locked/a.txt": "日本語\n", "healthy/b.txt": "日本語\n" });
+  h.config.set("rules", [{ pattern: "**/*.txt", encoding: "utf8" }]);
+  await h.scan();
+  const key = h.uri("locked/a.txt").toString();
+  h.unreadableDirectories.add("locked");
+  await h.scan();
+  assert.equal(h.rows().find(row => String(row.description).includes("配下は未確認"))?.command?.command, "revealInExplorer");
+  assert.ok(h.rows().some(row => row.contextValue === "scannedFile" && row.label === "healthy/b.txt"));
+  assert.ok(!h.messages.some(message => message.includes("スキャンに失敗")));
+  assert.ok(!h.rows().some(row => row.label === "続きを解析（最大100件）"));
+  for (const setting of ["encodingBaseline.v1", "lineEndingBaseline.v2"]) assert.ok((h.state.get(setting) as Record<string, unknown>)[key]);
+  h.unreadableDirectories.clear();
+  await h.command("addScanSelection", h.uri("locked"));
+  assert.ok(!h.rows().some(row => String(row.description).includes("配下は未確認")));
+  await h.scan();
+  assert.equal(h.rows().filter(row => row.contextValue === "scannedFile").length, 2);
 });

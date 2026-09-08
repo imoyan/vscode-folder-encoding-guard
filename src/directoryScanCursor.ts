@@ -12,6 +12,8 @@ export class DirectoryScanCursor {
   private current: Directory | undefined;
   private currentPath = "";
   private readonly buffered: string[] = [];
+  private readonly unreadable: string[] = [];
+  private readonly attemptedDirectories: string[] = [];
   private exhausted = false;
   private closed = false;
   private active: Promise<void> | undefined;
@@ -25,16 +27,16 @@ export class DirectoryScanCursor {
     },
   ) { this.directories = [root]; }
 
-  public async peek(limit: number, cancelled: () => boolean): Promise<{ paths: readonly string[]; complete: boolean }> {
+  public async peek(limit: number, cancelled: () => boolean): Promise<{ paths: readonly string[]; complete: boolean; unreadable: readonly string[]; attemptedDirectories: readonly string[] }> {
     if (this.active || this.closed) throw new Error("ディレクトリの解析状態が変更されました");
     const active = this.fill(limit, cancelled);
     this.active = active;
     try { await active; }
     finally { if (this.active === active) this.active = undefined; }
-    return { paths: this.buffered.slice(0, limit), complete: this.exhausted && this.buffered.length <= limit };
+    return { paths: this.buffered.slice(0, limit), complete: this.exhausted && this.buffered.length <= limit, unreadable: [...this.unreadable], attemptedDirectories: [...this.attemptedDirectories] };
   }
 
-  public commit(count: number): void { this.buffered.splice(0, count); }
+  public commit(count: number): void { this.buffered.splice(0, count); this.unreadable.length = 0; this.attemptedDirectories.length = 0; }
 
   private async fill(limit: number, cancelled: () => boolean): Promise<void> {
     // Bound metadata work too, even in a tree containing only directories/exclusions.
@@ -44,15 +46,25 @@ export class DirectoryScanCursor {
         const directory = this.directories.pop();
         if (!directory) { this.exhausted = true; break; }
         entries++;
+        this.attemptedDirectories.push(directory);
         try { this.current = await this.open(directory); this.currentPath = directory; }
         catch (error) {
           const code = (error as NodeJS.ErrnoException).code;
+          if (code === "EACCES" || code === "EPERM") { this.unreadable.push(directory); continue; }
           if (code === "ENOENT" || code === "ENOTDIR") continue;
           this.directories.push(directory);
           throw error;
         }
       }
-      const entry = await this.current.read();
+      let entry: Dirent | null;
+      try { entry = await this.current.read(); }
+      catch (error) {
+        const code = (error as NodeJS.ErrnoException).code;
+        if (code !== "EACCES" && code !== "EPERM") throw error;
+        this.unreadable.push(this.currentPath);
+        await this.closeCurrent().catch(() => undefined);
+        continue;
+      }
       entries++;
       if (!entry) { await this.closeCurrent(); continue; }
       const candidate = path.join(this.currentPath, entry.name);
@@ -74,5 +86,7 @@ export class DirectoryScanCursor {
     await this.closeCurrent();
     this.directories.length = 0;
     this.buffered.length = 0;
+    this.unreadable.length = 0;
+    this.attemptedDirectories.length = 0;
   }
 }

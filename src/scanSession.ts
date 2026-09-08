@@ -23,6 +23,7 @@ export function appendScanSnapshot(previous: EncodingScanSnapshot, next: Encodin
   const pageCursors = [...new Map([...(previous.pageCursors ?? []), ...(next.pageCursors ?? [])].map((cursor) => [cursor.key, cursor])).values()];
   return {
     ...next,
+    unreadableDirectories: [...new Set([...(previous.unreadableDirectories ?? []).filter(directory => !attempted.has(directory)), ...(next.unreadableDirectories ?? [])])],
     pageCursors, hasMore: pageCursors.some((cursor) => !cursor.complete),
     files: [...(previous.files ?? []), ...(next.files ?? [])],
     headVerifications: retainGitVerifications([...(previous.headVerifications ?? []), ...(next.headVerifications ?? [])]),

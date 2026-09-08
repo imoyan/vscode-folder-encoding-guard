@@ -347,7 +347,7 @@ export class RulesProvider implements vscode.TreeDataProvider<ViewItem> {
         row.tooltip = `${file.uri.fsPath}
 ${file.reason}`;
         row.resourceUri = file.uri;
-        row.command = { command: "vscode.open", title: "ファイルを開く", arguments: [file.uri] };
+        row.command = { command: file.directory ? "revealInExplorer" : "vscode.open", title: file.directory ? "エクスプローラーで表示" : "ファイルを開く", arguments: [file.uri] };
         return row;
       });
     }
