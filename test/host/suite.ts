@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import * as vscode from "vscode";
 import { writeFile } from "node:fs/promises";
-import { picks, confirmations, providers, errors, expectedErrors, notices } from "./hostDriver.js";
+import { picks, confirmations, nonModalResponses, providers, errors, expectedErrors, notices, statusItems } from "./hostDriver.js";
 import type { ScanFinding } from "../../src/scanner.js";
 import { readBackupResource } from "../../src/conversionBackup.js";
 
@@ -26,21 +26,24 @@ async function scan(): Promise<void> {
 
 // File events arrive asynchronously. Wait for delivery before the next manual
 // scan, instead of racing an earlier write against its invalidation event.
-async function withObservedFileChange(uri: vscode.Uri, action: () => PromiseLike<unknown>): Promise<void> {
+async function withObservedFileChange(uri: vscode.Uri | readonly vscode.Uri[], action: () => PromiseLike<unknown>): Promise<void> {
+  const expected = new Set((Array.isArray(uri) ? uri : [uri]).map((entry: vscode.Uri) => entry.toString()));
+  const pending = new Set(expected);
   const watcher = vscode.workspace.createFileSystemWatcher("**/*");
   let timer: ReturnType<typeof setTimeout> | undefined;
   let quietTimer: ReturnType<typeof setTimeout> | undefined;
   let accept: (() => void) | undefined;
   const event = new Promise<void>((resolve, reject) => {
     accept = resolve;
-    timer = setTimeout(() => reject(new Error(`Missing file event: ${uri.fsPath}`)), 10000);
+    timer = setTimeout(() => reject(new Error(`Missing file event: ${[...pending].join(", ")}`)), 10000);
   });
   const observe = (changed: vscode.Uri): void => {
-    if (changed.toString() !== uri.toString()) return;
+    if (!expected.has(changed.toString())) return;
+    pending.delete(changed.toString());
     // Native watchers may deliver create/change in separate batches. Wait for
     // a quiet period, bounded by the timeout, before the next scripted action.
     clearTimeout(quietTimer);
-    quietTimer = setTimeout(() => accept?.(), 250);
+    if (!pending.size) quietTimer = setTimeout(() => accept?.(), 250);
   };
   const listeners = [watcher.onDidCreate(observe), watcher.onDidChange(observe)];
   try {
@@ -91,6 +94,17 @@ export async function run(): Promise<void> {
   assert.equal((await items("allowances")).length, 0);
   assert.ok((await finding(mixed)).finding?.mixedLineEndings);
 
+  picks.push({ title: "現在：許容しない", label: "許容する" });
+  await command("configureMixedPolicy", plain.uri);
+  picks.push({ title: "現在：許容する（./ から継承）", label: "許容しない" });
+  await command("configureMixedPolicy", mixed);
+  await scan();
+  assert.ok((await finding(mixed)).finding?.mixedLineEndings);
+  picks.push({ title: "現在：許容しない（この対象の指定）", label: "個別設定を解除" });
+  await command("configureMixedPolicy", mixed);
+  picks.push({ title: "現在：許容する（この対象の指定）", label: "個別設定を解除" });
+  await command("configureMixedPolicy", plain.uri);
+
   const changed = vscode.Uri.joinPath(tracked.uri, "history.txt");
   await writeObserved(changed, await vscode.workspace.encode("履歴\r\n", { encoding: "utf8bom" }));
   await scan();
@@ -121,7 +135,7 @@ export async function run(): Promise<void> {
   assert.ok(document.isDirty);
   confirmations.push("確認済みにする");
   await command("acknowledgeEncodingChange", dirtyItem);
-  expectedErrors.push("保存注意: history.txt は UTF-16 LE、フォルダールールは UTF-8 です。");
+  expectedErrors.push("保存注意: history.txt は UTF-16 LE、文字コード設定は UTF-8 です。");
   await withObservedFileChange(changed, async () => { assert.ok(await document.save()); });
   await scan();
   assert.equal((await finding(changed)).finding?.encodingChange?.from, "utf8bom");
@@ -167,6 +181,52 @@ export async function run(): Promise<void> {
   assert.equal(await readBackupResource(target, original.length - 1), undefined);
   assert.equal(await readBackupResource(target.with({ scheme: "vscode-userdata", authority: "remote" }), original.length), undefined);
   assert.equal(await readBackupResource(target.with({ scheme: "unknown" }), original.length), undefined);
+  const gitApi = git.exports.getAPI(1) as { toGitUri(uri: vscode.Uri, ref: string): vscode.Uri };
+  const headUri = gitApi.toGitUri(changed, "HEAD");
+  const headDocument = await vscode.workspace.openTextDocument(headUri);
+  const headEncoding = headDocument.encoding;
+  await vscode.workspace.openTextDocument(changed, { encoding: "utf16le" });
+  await vscode.commands.executeCommand("vscode.diff", headUri, changed, "文字コード比較テスト", { preview: false });
+  const bytesBeforeReopen = await vscode.workspace.fs.readFile(changed);
+  nonModalResponses.push("期待値で開き直す");
+  await command("inspectActiveFile");
+  const comparisonTab = vscode.window.tabGroups.activeTabGroup.activeTab;
+  assert.ok(comparisonTab?.input instanceof vscode.TabInputTextDiff);
+  assert.equal(comparisonTab.input.original.toString(), headUri.toString());
+  assert.equal(comparisonTab.input.modified.toString(), changed.toString());
+  assert.deepEqual(nonModalResponses, [], JSON.stringify({ active: vscode.window.activeTextEditor?.document.uri.toString(), encoding: vscode.window.activeTextEditor?.document.encoding, notices: notices.slice(-3) }));
+  assert.equal(vscode.window.activeTextEditor?.document.encoding, "utf8");
+  assert.ok(statusItems.some((item) => /左 Git版:.*右 作業中:/.test(item.text)), JSON.stringify(statusItems.map((item) => item.text)));
+  assert.equal(headDocument.encoding, headEncoding);
+  assert.deepEqual(await vscode.workspace.fs.readFile(changed), bytesBeforeReopen);
+  assert.deepEqual(nonModalResponses, []);
+
+  await command("scanSelection", mixed);
+  await command("addScanSelection", changed);
+  assert.ok(await finding(mixed));
+  assert.ok(await finding(changed));
+  await scan();
+  assert.ok(await finding(mixed));
+  assert.ok(await finding(changed));
+
+  const previewFolder = vscode.Uri.joinPath(plain.uri, "preview");
+  const previewFiles = Array.from({ length: 121 }, (_, index) =>
+    vscode.Uri.joinPath(previewFolder, `preview-${String(index).padStart(3, "0")}.txt`));
+  await withObservedFileChange([previewFolder, ...previewFiles], async () => {
+    await vscode.workspace.fs.createDirectory(previewFolder);
+    await Promise.all(previewFiles.map(uri => vscode.workspace.fs.writeFile(uri, new TextEncoder().encode("hello\n"))));
+  });
+  await command("scanSelection", previewFolder);
+  assert.equal((await items("files")).filter((item) => item.contextValue === "scannedFile").length, 100);
+  assert.ok((await items("files")).some((item) => item.command?.command === "folderEncodingGuard.continueScan"));
+  await command("continueScan");
+  const fileRows = (await items("files")).filter((item) => item.contextValue === "scannedFile");
+  assert.equal(fileRows.length, 21, JSON.stringify({ errors, summary: (await items("summary")).map(item => item.label) }));
+  assert.ok(fileRows.every((item) => item.description?.toString().includes("ASCII互換 / LF · 注意なし")));
+  assert.ok(!(await items("files")).some((item) => item.command?.command === "folderEncodingGuard.continueScan"));
+  await command("showFilesPage", -1);
+  assert.equal((await items("files")).filter((item) => item.contextValue === "scannedFile").length, 100);
+
   assert.deepEqual(picks, []);
   assert.deepEqual(confirmations, []);
   assert.deepEqual(errors, []);

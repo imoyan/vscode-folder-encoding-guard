@@ -1,3 +1,4 @@
+import { isMixedLineEndingAllowed } from "./workspaceRules.js";
 import * as path from "node:path";
 import * as vscode from "vscode";
 import { protectedConversionSession, conversionSelectionBackupBytes, assessEncodingConversion } from "./conversionCore.js";
@@ -11,6 +12,7 @@ import { classifyEncoding, classifyLineEndings } from "./scanCore.js";
 
 export interface ConversionCandidate extends vscode.QuickPickItem {
   readonly needsConfirmation: boolean;
+  readonly changesAllowedMixedEndings?: boolean;
   readonly uri: vscode.Uri;
   readonly writeUri: vscode.Uri;
   readonly relativePath: string;
@@ -214,6 +216,7 @@ export async function selectConversion(
             alternativeEncodings: ENCODINGS.map((encoding) => encoding.id).filter((encoding) => encoding !== sourceEncoding) });
           const needsConfirmation = classification.kind !== "match" && classification.kind !== "ascii";
           const beforeEol = classifyLineEndings(original, sourceEncoding);
+          const changesAllowedMixedEndings = !!targetLineEnding && beforeEol.kind === "mixed" && isMixedLineEndingAllowed(uri);
           const eolLabel = beforeEol.kind === "mixed"
             ? beforeEol.styles.join("+").toUpperCase()
             : beforeEol.kind === "none" ? "改行なし" : beforeEol.kind.toUpperCase();
@@ -230,10 +233,11 @@ export async function selectConversion(
             conversionRootRealPath: folderRealPath,
             workspaceRootRealPath,
             needsConfirmation,
+            changesAllowedMixedEndings,
             label: relativePath,
-            description: `${needsConfirmation ? "要確認（文字コード判定不確実） · " : ""}${encodingInfo(sourceEncoding).label} → ${encodingInfo(targetEncoding).label} / ${eolLabel} → ${targetLineEnding?.toUpperCase() ?? eolLabel}`,
+            description: `${changesAllowedMixedEndings ? "許容済みの混在を統一 · " : ""}${needsConfirmation ? "要確認（文字コード判定不確実） · " : ""}${encodingInfo(sourceEncoding).label} → ${encodingInfo(targetEncoding).label} / ${eolLabel} → ${targetLineEnding?.toUpperCase() ?? eolLabel}`,
             detail: previewText(prepared.text),
-            picked: !needsConfirmation,
+            picked: !needsConfirmation && !changesAllowedMixedEndings,
           });
         } catch {
           recordExcluded(uri, "読み取り・検査に失敗しました");
@@ -280,7 +284,7 @@ export async function selectConversion(
     matchOnDescription: true,
     matchOnDetail: true,
     placeHolder: "変換するファイルだけを選択してください",
-    title: `変換候補 ${candidates.length} 件（要確認 ${candidates.filter((candidate) => candidate.needsConfirmation).length} 件は未選択）`,
+    title: `変換候補 ${candidates.length} 件（要確認 ${candidates.filter((candidate) => candidate.needsConfirmation || candidate.changesAllowedMixedEndings).length} 件は未選択）`,
   });
   if (!selected || selected.length === 0) {
     return undefined;
@@ -305,6 +309,7 @@ export async function selectConversion(
   const confirm = await vscode.window.showWarningMessage(
     `${selected.length} 件を変換します。${conversionDescription}。` +
       `判定不確実な選択 ${selected.filter((candidate) => candidate.needsConfirmation).length} 件。` +
+      (selected.some((candidate) => candidate.changesAllowedMixedEndings) ? "許容済みの混在も統一します。CSVのセル内改行を含むすべての改行が対象です。" : "") +
       `変換前データ ${formatByteSize(backupBytes)} はローカルへ退避されます。${backupNotice}`,
     { modal: true },
     "変換する",

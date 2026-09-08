@@ -1,3 +1,7 @@
+import { retainGitVerifications } from "./gitPolicySnapshot.js";
+import { verifyGitInspectionHeads } from "./gitIntegration.js";
+import { configureMixedPolicy, readMixedPolicy, writeMixedPolicy } from "./mixedPolicy.js";
+import { attributesAffectScope, scopeSelectsFile, scopeContains, selectScanScope, type ScanScope } from "./scanScope.js";
 import * as path from "node:path";
 import * as vscode from "vscode";
 import { minimatch } from "minimatch";
@@ -5,13 +9,12 @@ import { DEFAULT_SCAN_EXCLUDE } from "./fileLimits.js";
 import { CoalescingTask, SerialTaskQueue } from "./coalescingTask.js";
 import { ConversionManager } from "./conversion.js";
 import { encodingInfo } from "./rules.js";
-import { WorkspaceEncodingScanner } from "./scanner.js";
+import { appendScanSnapshot } from "./scanSession.js";
+import { WorkspaceEncodingScanner, type EncodingScanSnapshot } from "./scanner.js";
 import {
   CONFIGURATION_SECTION,
-  ALLOWED_MIXED_LINE_ENDINGS_SETTING,
   configurationFor,
   getRules,
-  getAllowedMixedLineEndings,
   relativePathFor,
   isMixedLineEndingAllowed,
   resolveRule,
@@ -62,6 +65,7 @@ export function activate(context: vscode.ExtensionContext): void {
     ],
     isMixedLineEndingAllowed,
   );
+  context.subscriptions.push(scanner);
   const scanScheduler = new CoalescingTask();
   const settingsQueue = new SerialTaskQueue();
   const baselineQueue = new SerialTaskQueue();
@@ -72,10 +76,18 @@ export function activate(context: vscode.ExtensionContext): void {
   let scanHasResult = false;
   let fileChangeRevision = 0;
   let scanCancelledByUser = false;
+  let scanScope: ScanScope | undefined;
+  let choosingScope = false;
+  let retainedSnapshot: EncodingScanSnapshot | undefined;
+  let additionScope: ScanScope | "workspace" | undefined;
 
   const invalidateScan = (changed = false): void => {
     scanRevision += 1;
     scanHasResult = false;
+    retainedSnapshot = undefined;
+    scanner.dispose();
+    void vscode.commands.executeCommand("setContext", "folderEncodingGuard.hasMore", false);
+    additionScope = undefined;
     scanCancellation?.cancel();
     rulesProvider.invalidateSnapshot(changed);
     decorationProvider.setSnapshot(undefined);
@@ -93,16 +105,37 @@ export function activate(context: vscode.ExtensionContext): void {
         true,
       ).then(undefined, () => undefined);
       try {
+        const retainedGit = retainedSnapshot?.headVerifications;
+        const previousHeadsCurrent = async (): Promise<boolean> => {
+          try {
+            return !retainedGit?.length || await verifyGitInspectionHeads({ availability: "available", files: new Map(), headVerifications: retainedGit }, cancellation.token);
+          } catch { return cancellation.token.isCancellationRequested; }
+        };
+        if (!(await previousHeadsCurrent())) {
+          invalidateScan(true);
+          void vscode.window.showInformationMessage("Gitの比較基準が変わりました。更新ボタンで追加済みの範囲を確認し直してください。");
+          return;
+        }
         const snapshot = await scanner.scan(
           () => revision === scanRevision,
           cancellation.token,
           () => { scanCancelledByUser = true; },
+          additionScope === "workspace" ? undefined : additionScope ?? scanScope,
+          new Set(retainedSnapshot?.checkedUris),
+          additionScope ? undefined : retainedSnapshot,
         );
+        if (snapshot && revision === scanRevision && !(await previousHeadsCurrent())) {
+          invalidateScan(true);
+          void vscode.window.showInformationMessage("Gitの比較基準が変わりました。更新ボタンで追加済みの範囲を確認し直してください。");
+          return;
+        }
         if (snapshot && revision === scanRevision) {
           scanHasResult = true;
-          rulesProvider.setSnapshot(snapshot);
-          decorationProvider.setSnapshot(snapshot);
-          void notifyGitIssues(context, snapshot.gitStatuses);
+          retainedSnapshot = { ...(retainedSnapshot ? appendScanSnapshot(retainedSnapshot, snapshot) : { ...snapshot, headVerifications: retainGitVerifications(snapshot.headVerifications ?? []) }), scopeLabel: scanScope?.label };
+          void vscode.commands.executeCommand("setContext", "folderEncodingGuard.hasMore", !!retainedSnapshot.hasMore);
+          rulesProvider.setSnapshot(retainedSnapshot);
+          decorationProvider.setSnapshot(retainedSnapshot);
+          void notifyGitIssues(context, retainedSnapshot.gitStatuses);
         }
       } catch (error) {
         const message = error instanceof Error ? error.message : String(error);
@@ -143,9 +176,18 @@ export function activate(context: vscode.ExtensionContext): void {
     const exclude = configurationFor(folder.uri).get<string>("conversionExclude",
       DEFAULT_SCAN_EXCLUDE);
     // Git attributes affect comparisons even when the file itself has no encoding rule.
-    const attributesChanged = path.basename(uri.fsPath) === ".gitattributes";
-    if (!attributesChanged && minimatch(relativePath, exclude, { dot: true })) return;
-    if (structural || attributesChanged || getRules(folder).length === 0 || resolveRule(uri)) {
+    const attributesChanged = path.basename(uri.fsPath) === ".gitattributes" && (!scanScope || attributesAffectScope(scanScope, uri));
+    const matchesRules = getRules(folder).length === 0 || resolveRule(uri) !== undefined;
+    const changedDirectory: ScanScope = { label: "", targets: [{ uri, directory: true }] };
+    const knownDescendants = structural && (
+      retainedSnapshot?.attemptedUris?.some((key) => key !== uri.toString() && scopeContains(changedDirectory, vscode.Uri.parse(key))) ||
+      scanScope?.targets.some((target) => scopeContains(changedDirectory, target.uri))
+    );
+    const selected = scanScope ? scopeSelectsFile(scanScope, uri, matchesRules) : matchesRules;
+    if (!selected && !knownDescendants && !attributesChanged) return;
+    const explicitFile = scanScope?.targets.some((target) => !target.directory && target.uri.toString() === uri.toString());
+    if (!explicitFile && !knownDescendants && !attributesChanged && minimatch(relativePath, exclude, { dot: true })) return;
+    if (selected || knownDescendants || attributesChanged) {
       fileChangeRevision += 1;
       invalidateScan(true);
     }
@@ -166,6 +208,7 @@ export function activate(context: vscode.ExtensionContext): void {
   };
 
   const ensureExpectedEncoding = async (document: vscode.TextDocument): Promise<void> => {
+    if (document.uri.scheme === "git") { updateDocumentState(document); return; }
     const match = resolveRule(document.uri);
     if (!match || isDocumentEncodingMatch(document, match)) {
       updateDocumentState(document);
@@ -205,7 +248,7 @@ export function activate(context: vscode.ExtensionContext): void {
     const action = "期待値で開き直す";
     const selected = await vscode.window.showWarningMessage(
       `${path.basename(document.fileName)} は ${encodingInfo(document.encoding).label} で開かれています。` +
-        `フォルダールールは ${encodingInfo(match.rule.encoding).label} です。`,
+        `文字コード設定は ${encodingInfo(match.rule.encoding).label} です。`,
       action,
     );
     if (selected === action) {
@@ -227,6 +270,54 @@ export function activate(context: vscode.ExtensionContext): void {
         settingsQueue,
       ),
     ),
+    vscode.commands.registerCommand("folderEncodingGuard.configureMixedPolicy", (uri?: vscode.Uri) => configureMixedPolicy(uri, settingsQueue)),
+    vscode.commands.registerCommand("folderEncodingGuard.configureFile", (uri?: vscode.Uri) => configureFolder(uri, rulesProvider, decorationProvider, settingsQueue, true)),
+    vscode.commands.registerCommand("folderEncodingGuard.scanSelection", async (uri?: vscode.Uri, selected?: readonly vscode.Uri[]) => {
+      if (choosingScope || scanCancellation) return;
+      choosingScope = true;
+      try {
+        const scope = await selectScanScope(uri, selected);
+        if (!scope) return;
+        scanScope = scope === "workspace" ? undefined : scope;
+        rulesProvider.setScope(scanScope?.label);
+        await vscode.commands.executeCommand("setContext", "folderEncodingGuard.hasScanScope", true);
+        invalidateScan();
+        await runScan();
+      } finally { choosingScope = false; }
+    }),
+    vscode.commands.registerCommand("folderEncodingGuard.addScanSelection", async (uri?: vscode.Uri, selected?: readonly vscode.Uri[]) => {
+      if (choosingScope || scanCancellation) return;
+      choosingScope = true;
+      try {
+        const scope = await selectScanScope(uri, selected);
+        if (!scope) return;
+        const canAppend = scanHasResult && retainedSnapshot !== undefined;
+        const oldScope = scanScope;
+        if (!canAppend) {
+          scanScope = scope === "workspace" ? undefined : scope;
+          invalidateScan();
+        } else {
+          const workspaceTargets = (vscode.workspace.workspaceFolders ?? []).map((folder) => ({ uri: folder.uri, directory: true, rulesOnly: true }));
+          const targets = [...new Map([...(oldScope?.targets ?? workspaceTargets), ...(scope === "workspace" ? workspaceTargets : scope.targets)]
+            .map((target) => [`${target.uri.toString()}:${!!target.rulesOnly}`, target])).values()];
+          scanScope = { targets, label: targets.map((target) => `${vscode.workspace.asRelativePath(target.uri) || vscode.workspace.getWorkspaceFolder(target.uri)?.name}${target.directory ? target.rulesOnly ? " / ルール対象" : " / 以下" : ""}`).join("、") };
+        }
+        rulesProvider.setScope(scanScope?.label);
+        await vscode.commands.executeCommand("setContext", "folderEncodingGuard.hasScanScope", true);
+        additionScope = canAppend ? scope : undefined;
+        const before = retainedSnapshot;
+        await runScan();
+        if (canAppend && retainedSnapshot === before) {
+          scanScope = oldScope;
+          rulesProvider.setScope(scanScope?.label);
+        }
+      } finally { additionScope = undefined; choosingScope = false; }
+    }),
+    vscode.commands.registerCommand("folderEncodingGuard.continueScan", async () => {
+      if (choosingScope || scanCancellation || !retainedSnapshot?.hasMore) return;
+      await runScan();
+    }),
+    vscode.commands.registerCommand("folderEncodingGuard.showFilesPage", (direction: number) => rulesProvider.showFilesPage(direction)),
     vscode.commands.registerCommand("folderEncodingGuard.inspectActiveFile", inspectActiveFile),
     vscode.commands.registerCommand(
       "folderEncodingGuard.convertFolder",
@@ -269,17 +360,12 @@ export function activate(context: vscode.ExtensionContext): void {
           const filePath = relativePathFor(item.finding.uri, folder);
           const parent = path.posix.dirname(filePath);
           const relativePath = scope.folder ? `${parent}/` : filePath;
+          let previous: boolean | undefined;
           const added = await settingsQueue.run(async () => {
-            const allowed = getAllowedMixedLineEndings(folder);
-            if (!allowed.includes(relativePath)) {
-              await configurationFor(folder.uri).update(
-                ALLOWED_MIXED_LINE_ENDINGS_SETTING,
-                [...allowed, relativePath].sort(),
-                vscode.ConfigurationTarget.WorkspaceFolder,
-              );
-              return true;
-            }
-            return false;
+            previous = readMixedPolicy(folder, relativePath);
+            if (previous === true) return false;
+            await writeMixedPolicy(folder, relativePath, true);
+            return true;
           });
           if (!added) return;
           invalidateScan();
@@ -288,11 +374,9 @@ export function activate(context: vscode.ExtensionContext): void {
             "元に戻す",
           );
           if (selected === "元に戻す") {
-            await settingsQueue.run(async () => configurationFor(folder.uri).update(
-              ALLOWED_MIXED_LINE_ENDINGS_SETTING,
-              getAllowedMixedLineEndings(folder).filter((entry) => entry !== relativePath),
-              vscode.ConfigurationTarget.WorkspaceFolder,
-            ));
+            await settingsQueue.run(async () => {
+              if (readMixedPolicy(folder, relativePath) === true) await writeMixedPolicy(folder, relativePath, previous);
+            });
             invalidateScan();
           }
         } finally {
@@ -312,7 +396,7 @@ export function activate(context: vscode.ExtensionContext): void {
     vscode.commands.registerCommand("folderEncodingGuard.editRule", (item?: RuleItem) => editRule(item, settingsQueue)),
     vscode.commands.registerCommand("folderEncodingGuard.moveRuleUp", (item?: RuleItem) => moveRule(item, -1, settingsQueue)),
     vscode.commands.registerCommand("folderEncodingGuard.moveRuleDown", (item?: RuleItem) => moveRule(item, 1, settingsQueue)),
-    vscode.commands.registerCommand("folderEncodingGuard.refresh", runScan),
+    vscode.commands.registerCommand("folderEncodingGuard.refresh", refreshScan),
     vscode.commands.registerCommand("folderEncodingGuard.acknowledgeLineEndingChange", async (item?: FindingItem) => {
       if (acknowledging) return;
       acknowledging = true;
@@ -358,7 +442,7 @@ export function activate(context: vscode.ExtensionContext): void {
         if (config.get("warnOnSave", true) || config.get("enforceOnSave", false)) {
           void vscode.window.showErrorMessage(
             `保存注意: ${path.basename(event.document.fileName)} は ${encodingInfo(event.document.encoding).label}、` +
-              `フォルダールールは ${encodingInfo(match.rule.encoding).label} です。`,
+              `文字コード設定は ${encodingInfo(match.rule.encoding).label} です。`,
           );
         }
       }
@@ -378,6 +462,7 @@ export function activate(context: vscode.ExtensionContext): void {
   );
 
   void vscode.commands.executeCommand("setContext", "folderEncodingGuard.scanning", false);
+  void vscode.commands.executeCommand("setContext", "folderEncodingGuard.hasScanScope", false);
   void conversionManager.notifyProtectedConversion().then(undefined, () => undefined);
 
   vscode.workspace.textDocuments.forEach((document) => void ensureExpectedEncoding(document));

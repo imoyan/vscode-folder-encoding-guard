@@ -46,22 +46,37 @@ export function normalizeRelativePath(relativePath: string): string {
   return relativePath.replaceAll("\\", "/").replace(/^\.\//, "").replace(/\/$/, "");
 }
 
+export function patternForFile(relativePath: string): string {
+  return escape(normalizeRelativePath(relativePath)).replace(/^([!#])/, "\\$1");
+}
+
 export function patternForFolder(relativePath: string): string {
   const normalized = normalizeRelativePath(relativePath);
-  return normalized.length === 0 ? "**" : `${escape(normalized)}/**`;
+  return normalized.length === 0 ? "**" : `${patternForFile(normalized)}/**`;
 }
 
 // Existing entries are literal file paths. A trailing slash denotes a folder,
 // not a glob, so names containing [] or * are never interpreted as patterns.
-export function isMixedPathAllowed(entries: readonly string[], relativePath: string): boolean {
+export function isMixedPathAllowed(entries: readonly string[], relativePath: string, denied: readonly string[] = []): boolean {
+  return resolveMixedPathPolicy(entries, relativePath, denied)?.allowed ?? false;
+}
+
+export function resolveMixedPathPolicy(entries: readonly string[], relativePath: string, denied: readonly string[] = []): { entry: string; allowed: boolean } | undefined {
   const normalizedPath = normalizeRelativePath(relativePath);
-  return entries.some((entry) => {
-    const portable = entry.replaceAll("\\", "/");
-    const folder = portable.endsWith("/");
-    const normalized = normalizeRelativePath(portable);
-    return folder ? normalized === "" || normalizedPath.startsWith(`${normalized}/`)
-      : normalized === normalizedPath;
-  });
+  let result: { entry: string; allowed: boolean } | undefined;
+  let specificity = -1;
+  for (const [paths, allow] of [[entries, true], [denied, false]] as const) {
+    for (const entry of paths) {
+      const folder = entry.replaceAll("\\", "/").endsWith("/");
+      const normalized = normalizeRelativePath(entry);
+      const matches = folder ? normalized === "" || normalizedPath.startsWith(`${normalized}/`) || (relativePath.replaceAll("\\", "/").endsWith("/") && normalizedPath === normalized) : normalizedPath === normalized;
+      if (matches && normalized.length >= specificity) {
+        specificity = normalized.length;
+        result = { entry, allowed: allow };
+      }
+    }
+  }
+  return result;
 }
 
 export function findMatchingRule(

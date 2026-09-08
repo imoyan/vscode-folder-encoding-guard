@@ -1,3 +1,4 @@
+import { readMixedPolicy, writeMixedPolicy } from "./mixedPolicy.js";
 import { LINE_ENDING_BASELINE_KEY, parseLineEndingBaselines } from "./lineEndingBaseline.js";
 import * as vscode from "vscode";
 import type { SerialTaskQueue } from "./coalescingTask.js";
@@ -6,7 +7,7 @@ import { ENCODING_BASELINE_KEY, acknowledgedEncodingBaseline, parseEncodingBasel
 import { hashBytes, isDirty } from "./conversionResources.js";
 import { configuredFileSizeLimit } from "./fileLimits.js";
 import { readStableResource, resourceStillMatchesRead } from "./stableResourceRead.js";
-import { ALLOWED_MIXED_LINE_ENDINGS_SETTING, configurationFor, getAllowedMixedLineEndings, resolveRule } from "./workspaceRules.js";
+import { configurationFor, resolveRule } from "./workspaceRules.js";
 
 export async function acknowledgeEncodingChange(
   item: FindingItem | undefined,
@@ -68,13 +69,8 @@ export async function removeMixedAllowance(
 ): Promise<void> {
   if (!item) return;
   await settingsQueue.run(async () => {
-    const entries = getAllowedMixedLineEndings(item.folder);
-    if (!entries.includes(item.entry)) return;
-    await configurationFor(item.folder.uri).update(
-      ALLOWED_MIXED_LINE_ENDINGS_SETTING,
-      entries.filter((entry) => entry !== item.entry),
-      vscode.ConfigurationTarget.WorkspaceFolder,
-    );
+    if (readMixedPolicy(item.folder, item.entry) !== item.allowed) return;
+    await writeMixedPolicy(item.folder, item.entry, undefined);
   });
   await refresh();
 }

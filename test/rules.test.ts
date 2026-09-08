@@ -4,6 +4,8 @@ import {
   findMatchingRule,
   normalizeRelativePath,
   patternForFolder,
+  patternForFile,
+  isMixedPathAllowed,
   sanitizeRules,
 } from "../src/rules.js";
 
@@ -50,4 +52,25 @@ test("drops malformed configuration entries", () => {
     ]),
     [{ pattern: "legacy/**", encoding: "shiftjis" }],
   );
+});
+
+
+test("single-file settings match only the literal selected filename", () => {
+  for (const name of ["legacy/[sample].txt", "!special.txt", "#note.txt"]) {
+    const rules = [{ pattern: patternForFile(name), encoding: "utf8bom" }];
+    assert.ok(findMatchingRule(rules, name));
+    assert.equal(findMatchingRule(rules, "other.txt"), undefined);
+    assert.equal(findMatchingRule(rules, name + "/nested.txt"), undefined);
+  }
+});
+
+
+test("the most specific mixed-ending policy wins and denial wins equal paths", () => {
+  assert.equal(isMixedPathAllowed(["data/"], "data/a.csv", ["data/a.csv"]), false);
+  assert.equal(isMixedPathAllowed(["data/"], "data/b.csv", ["data/a.csv"]), true);
+  assert.equal(isMixedPathAllowed(["data/special/a.csv"], "data/special/a.csv", ["data/"]), true);
+  assert.equal(isMixedPathAllowed(["./"], "data/a.csv", ["data/"]), false);
+  assert.equal(isMixedPathAllowed(["data/[literal].csv"], "data/[literal].csv", []), true);
+  assert.equal(isMixedPathAllowed(["data/a.csv"], "data/a.csv", ["data/a.csv"]), false);
+  assert.equal(isMixedPathAllowed(["data/"], "database/a.csv", []), false);
 });

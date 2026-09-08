@@ -1,3 +1,6 @@
+import { DirectoryScanCursor } from "./directoryScanCursor.js";
+import { Minimatch } from "minimatch";
+import { scopeContains, type ScanScope } from "./scanScope.js";
 import * as path from "node:path";
 import * as vscode from "vscode";
 import {
@@ -59,11 +62,32 @@ export interface EncodingSummary {
   readonly count: number;
 }
 
+export interface ScanPageCursor {
+  readonly key: string;
+  readonly reader?: DirectoryScanCursor;
+  readonly complete: boolean;
+}
+
+export interface ScannedFile {
+  readonly uri: vscode.Uri;
+  readonly displayPath: string;
+  readonly encoding: string;
+  readonly lineEnding: string;
+}
+
 export interface EncodingScanSnapshot {
+  readonly pageCursors?: readonly ScanPageCursor[];
+  readonly hasMore?: boolean;
+  readonly files?: readonly ScannedFile[];
+  readonly headVerifications?: GitInspectionResult["headVerifications"];
+  readonly checkedUris?: readonly string[];
+  readonly attemptedUris?: readonly string[];
+  readonly unreadableDirectories?: readonly string[];
   readonly completedAt: Date;
+  readonly scopeLabel?: string;
   readonly scannedCount: number;
   readonly skippedCount: number;
-  readonly skippedFiles?: readonly { uri: vscode.Uri; displayPath: string; reason: string }[];
+  readonly skippedFiles?: readonly { uri: vscode.Uri; displayPath: string; reason: string; directory?: boolean }[];
   readonly summaries: readonly EncodingSummary[];
   readonly lineEndingSummaries: readonly EncodingSummary[];
   readonly findings: readonly ScanFinding[];
@@ -96,6 +120,13 @@ interface PreparedScanResource extends ScanResource {
 }
 
 export class WorkspaceEncodingScanner {
+  private readonly readers = new Set<DirectoryScanCursor>();
+
+  public dispose(): void {
+    for (const reader of this.readers) void reader.dispose().catch(() => undefined);
+    this.readers.clear();
+  }
+
   public constructor(
     private readonly workspaceState: vscode.Memento,
     private readonly expectedEncodingFor: (
@@ -115,14 +146,19 @@ export class WorkspaceEncodingScanner {
     isCurrent: () => boolean = () => true,
     cancellationToken?: vscode.CancellationToken,
     onUserCancellation: () => void = () => undefined,
+    scope?: ScanScope,
+    alreadyChecked: ReadonlySet<string> = new Set(),
+    previousPage?: EncodingScanSnapshot,
   ): Promise<EncodingScanSnapshot | undefined> {
-    const folders = vscode.workspace.workspaceFolders ?? [];
+    const folders = (vscode.workspace.workspaceFolders ?? []).filter((folder) => !scope || scope.targets.some(({ uri }) => vscode.workspace.getWorkspaceFolder(uri)?.uri.toString() === folder.uri.toString()) || scopeContains(scope, folder.uri)).sort((left, right) => right.uri.fsPath.length - left.uri.fsPath.length);
     if (folders.length === 0) {
       void vscode.window.showInformationMessage(
         "文字コードを確認するワークスペースを開いてください。",
       );
       return undefined;
     }
+    const createdReaders = new Set<DirectoryScanCursor>();
+    let committed = false;
     const linkedCancellation = new vscode.CancellationTokenSource();
     const externalCancellation = cancellationToken?.onCancellationRequested(
       () => {
@@ -156,72 +192,79 @@ export class WorkspaceEncodingScanner {
           const alternativeEncodings = this.candidateEncodings();
           const unconfiguredCandidates = ENCODINGS.map((encoding) => encoding.id);
           const resources: ScanResource[] = [];
+          const attemptedDirectories = new Set<string>();
+          const unreadableResources: ScanResource[] = [];
+          const unreadableDirectories = new Set(previousPage?.unreadableDirectories);
           const seen = new Set<string>();
+          const cursors = new Map<string, ScanPageCursor>();
+          const commits: Array<{ reader: DirectoryScanCursor; count: number }> = [];
+          const previousCursors = new Map(previousPage?.pageCursors?.map((cursor) => [cursor.key, cursor]));
+          // Bound candidate work across all roots, including candidates without matching rules.
+          let remaining = Math.min(100, ...folders.map((folder) => {
+            const value = this.configurationFor(folder.uri).get<number>("maxScanFiles", 5000);
+            return Number.isFinite(value) ? Math.max(1, Math.floor(value)) : 100;
+          }));
           for (const folder of folders) {
-            if (token.isCancellationRequested || !isCurrent()) {
-              return undefined;
-            }
             const rules = this.patternsFor(folder);
-            // Enumerate with VS Code syntax, then apply the shared minimatch rule matcher.
-            const patterns = ["**/*"];
+            const targets = scope?.targets.flatMap((target) => {
+              if (vscode.workspace.getWorkspaceFolder(target.uri)?.uri.toString() === folder.uri.toString()) return [target];
+              return target.directory && scopeContains({ label: scope.label, targets: [target] }, folder.uri)
+                ? [{ ...target, uri: folder.uri }] : [];
+            }) ?? [{ uri: folder.uri, directory: true, rulesOnly: true }];
             const config = this.configurationFor(folder.uri);
-            const maxFiles = config.get<number>("maxScanFiles", 5000);
-            const maxSize = configuredFileSizeLimit(
-              config.get<number>("maxFileSizeKB", 5120),
-            );
-            const exclude = config.get<string>(
-              "conversionExclude",
-              DEFAULT_SCAN_EXCLUDE,
-            );
-            const folderResources = new Map<string, vscode.Uri>();
-            for (const pattern of patterns) {
-              let uris: readonly vscode.Uri[];
-              try {
-                uris = await vscode.workspace.findFiles(
-                  new vscode.RelativePattern(folder, pattern),
-                  exclude,
-                  maxFiles + 1,
-                  token,
-                );
-              } catch (error) {
-                if (token.isCancellationRequested || !isCurrent()) {
-                  return undefined;
+            const maxSize = configuredFileSizeLimit(config.get<number>("maxFileSizeKB", 5120));
+            const exclude = config.get<string>("conversionExclude", DEFAULT_SCAN_EXCLUDE);
+            for (const target of targets) {
+              if (token.isCancellationRequested || !isCurrent()) return undefined;
+              const key = JSON.stringify([folder.uri.toString(), target.uri.toString(), !!target.rulesOnly]);
+              if (cursors.has(key)) continue;
+              const previous = previousCursors.get(key);
+              if (previous?.complete) { cursors.set(key, previous); continue; }
+              if (remaining === 0) {
+                cursors.set(key, previous ?? { key, complete: false });
+                continue;
+              }
+              progress.report({ message: "候補を検索中（今回は最大100件）" });
+              let reader = previous?.reader;
+              let page: readonly vscode.Uri[];
+              let complete: boolean;
+              if (target.directory) {
+                if (!reader) {
+                  const matcher = new Minimatch(exclude, { dot: true });
+                  reader = new DirectoryScanCursor(target.uri.fsPath, (candidate, directory) => {
+                    const relative = path.relative(folder.uri.fsPath, candidate).replaceAll(path.sep, "/");
+                    return matcher.match(relative) || (directory && matcher.match(`${relative}/`)) ||
+                      (directory && vscode.workspace.getWorkspaceFolder(vscode.Uri.file(candidate))?.uri.toString() !== folder.uri.toString());
+                  });
+                  this.readers.add(reader);
+                  createdReaders.add(reader);
                 }
-                throw error;
-              }
-              if (token.isCancellationRequested || !isCurrent()) {
-                return undefined;
-              }
-              if (uris.length > maxFiles) {
-                void vscode.window.showErrorMessage(
-                  `${folder.name} の検索候補が ${maxFiles} 件を超えました。` +
-                    "入れ子のワークスペースを含む場合はフォルダーを絞るか maxScanFiles を変更してください。",
-                );
-                return undefined;
-              }
-              for (const uri of uris) {
+                const result = await reader.peek(remaining, () => token.isCancellationRequested || !isCurrent());
+                for (const directory of result.attemptedDirectories) attemptedDirectories.add(vscode.Uri.file(directory).toString());
+                for (const directory of result.unreadable) {
+                  const uri = vscode.Uri.file(directory);
+                  unreadableResources.push({ uri, folder, maxSize });
+                  unreadableDirectories.add(uri.toString());
+                }
+                page = result.paths.map((entry) => vscode.Uri.file(entry));
+                complete = result.complete;
+                commits.push({ reader, count: page.length });
+              } else { page = [target.uri]; complete = true; }
+              if (token.isCancellationRequested || !isCurrent()) return undefined;
+              remaining -= page.length;
+              for (const uri of page) {
+                const uriKey = uri.toString();
                 const owner = vscode.workspace.getWorkspaceFolder(uri);
-                if (!owner || owner.uri.toString() !== folder.uri.toString()) {
-                  continue;
-                }
-                if (rules.length > 0 && this.expectedEncodingFor(uri) === undefined) continue;
-                folderResources.set(uri.toString(), uri);
-                if (folderResources.size > maxFiles) {
-                  void vscode.window.showErrorMessage(
-                    `${folder.name} のルール対象が ${maxFiles} 件を超えました。` +
-                      "フォルダーを絞るか maxScanFiles を変更してください。",
-                  );
-                  return undefined;
-                }
-              }
-            }
-            for (const [key, uri] of folderResources) {
-              if (!seen.has(key)) {
-                seen.add(key);
+                if (!owner || owner.uri.toString() !== folder.uri.toString() || seen.has(uriKey) || alreadyChecked.has(uriKey)) continue;
+                if (target.rulesOnly && rules.length > 0 && this.expectedEncodingFor(uri) === undefined) continue;
+                seen.add(uriKey);
                 resources.push({ uri, folder, maxSize });
               }
+              cursors.set(key, { key, reader, complete });
             }
           }
+          const pageCursors = [...cursors.values()];
+          const hasMore = pageCursors.some((cursor) => !cursor.complete);
           const previousBaselineState = this.workspaceState.get<unknown>(
             LINE_ENDING_BASELINE_KEY,
           );
@@ -234,13 +277,14 @@ export class WorkspaceEncodingScanner {
             previousBaselineState,
             previousLegacyBaselineState,
           );
+          const missingKeys = new Set<string>();
           const preparedResources: PreparedScanResource[] = [];
           const scanResources: PreparedScanResource[] = [];
-          const skippedFiles: { uri: vscode.Uri; displayPath: string; reason: string }[] = [];
-          const skip = (resource: ScanResource, reason: string): void => {
-            const relative = path.relative(resource.folder.uri.fsPath, resource.uri.fsPath).replaceAll(path.sep, "/");
-            skippedFiles.push({ uri: resource.uri, displayPath: folders.length === 1 ? relative : `${resource.folder.name}/${relative}`, reason });
+          const skippedFiles: { uri: vscode.Uri; displayPath: string; reason: string; directory?: boolean }[] = [];
+          const skip = (resource: ScanResource, reason: string, directory = false): void => {
+            skippedFiles.push({ uri: resource.uri, displayPath: scanDisplayPath(resource), reason, directory });
           };
+          for (const resource of unreadableResources) skip(resource, "フォルダーを読み取れません（配下は未確認）", true);
           for (const resource of resources) {
             if (token.isCancellationRequested || !isCurrent()) {
               return undefined;
@@ -249,14 +293,14 @@ export class WorkspaceEncodingScanner {
             // UTF-8 is a probe hint, never an implicit rule for unconfigured files.
             const prepared = { ...resource, expectedEncoding: ruleEncoding ?? "utf8", hasRule: ruleEncoding !== undefined };
             preparedResources.push(prepared);
-            if (isDirty(resource.uri)) {
-              skip(resource, "未保存の変更があります");
-              continue;
-            }
             try {
               const stat = await vscode.workspace.fs.stat(resource.uri);
               if (stat.type !== vscode.FileType.File) {
                 skip(resource, "通常ファイルではありません");
+                continue;
+              }
+              if (isDirty(resource.uri)) {
+                skip(resource, "未保存の変更があります");
                 continue;
               }
               if (stat.size > resource.maxSize) {
@@ -264,19 +308,33 @@ export class WorkspaceEncodingScanner {
                 continue;
               }
               scanResources.push(prepared);
-            } catch {
-              skip(resource, "ファイル情報を読み取れません");
+            } catch (error) {
+              const code = (error as { code?: string }).code;
+              if (code === "ENOENT" || code === "FileNotFound") missingKeys.add(resource.uri.toString());
+              skip(resource, missingKeys.has(resource.uri.toString()) ? "ファイルがありません" : "ファイル情報を読み取れません");
             }
           }
-          const comparisonResources = preparedResources.filter((resource) => resource.hasRule);
+          const comparisonResources = preparedResources.filter((resource) => resource.hasRule && !missingKeys.has(resource.uri.toString()));
           const resourceKeys = new Set(
             comparisonResources.map((resource) => resource.uri.toString()),
           );
+          const priorResources = new Set(previousPage?.attemptedUris);
+          const unreadableScope: ScanScope = { label: "", targets: [...unreadableDirectories].map(directory => ({ uri: vscode.Uri.parse(directory), directory: true })) };
+          const retainBaseline = (key: string): boolean => {
+            if (missingKeys.has(key)) return false;
+            try {
+              if (scopeContains(unreadableScope, vscode.Uri.parse(key))) return true;
+            } catch { /* Preserve the existing handling of malformed baseline keys below. */ }
+            if (hasMore || resourceKeys.has(key) || alreadyChecked.has(key) || priorResources.has(key)) return true;
+            if (!scope) return false;
+            try { return !scopeContains(scope, vscode.Uri.parse(key)); }
+            catch { return false; }
+          };
           const nextLineEndings = new Map(
-            [...previousLineEndings].filter(([key]) => resourceKeys.has(key)),
+            [...previousLineEndings].filter(([key]) => retainBaseline(key)),
           );
           const nextEncodings = new Map(
-            [...previousEncodings].filter(([key]) => resourceKeys.has(key)),
+            [...previousEncodings].filter(([key]) => retainBaseline(key)),
           );
           const scanResourceKeys = new Set(
             scanResources.map((resource) => resource.uri.toString()),
@@ -323,6 +381,8 @@ export class WorkspaceEncodingScanner {
           const lineEndingCounts = new Map<string, number>();
           const findings: ScanFinding[] = [];
           let scannedCount = 0;
+          const checkedUris: string[] = [];
+          const files: ScannedFile[] = [];
 
           for (const [index, resource] of scanResources.entries()) {
             if (token.isCancellationRequested || !isCurrent()) {
@@ -376,6 +436,7 @@ export class WorkspaceEncodingScanner {
               }
 
               scannedCount += 1;
+              checkedUris.push(resource.uri.toString());
               const summaryEncoding =
                 classification.kind === "ascii"
                   ? "ascii"
@@ -393,6 +454,8 @@ export class WorkspaceEncodingScanner {
                 classification,
                 resource.expectedEncoding,
               );
+              const displayPath = scanDisplayPath(resource);
+              files.push({ uri: resource.uri, displayPath, encoding: summaryEncoding, lineEnding: lineEndings?.kind ?? "unknown" });
               const resourceKey = resource.uri.toString();
               const encodingComparison = resource.hasRule ? planEncodingComparison(
                 classification, resource.expectedEncoding, previousEncodings.get(resourceKey),
@@ -473,9 +536,6 @@ export class WorkspaceEncodingScanner {
                 lineEndingChange ||
                 lineEndingRuleMismatch
               ) {
-                const relativePath = path
-                  .relative(resource.folder.uri.fsPath, resource.uri.fsPath)
-                  .replaceAll(path.sep, "/");
                 findings.push({
                   localLineEndingChange: lineEndingChange && lineEndings && comparisonPlan?.nextBaseline?.source === "baseline"
                     ? { baseline: comparisonPlan.nextBaseline,
@@ -487,10 +547,7 @@ export class WorkspaceEncodingScanner {
                     contentHash: hashBytes(read.bytes),
                   } : undefined,
                   uri: resource.uri,
-                  displayPath:
-                    folders.length === 1
-                      ? relativePath
-                      : `${resource.folder.name}/${relativePath}`,
+                  displayPath,
                   encodingIssue: hasEncodingIssue
                     ? {
                         expectedEncoding: resource.hasRule ? resource.expectedEncoding : undefined,
@@ -558,8 +615,16 @@ export class WorkspaceEncodingScanner {
             );
             return undefined;
           }
+          for (const { reader, count } of commits) reader.commit(count);
+          committed = true;
+          const checkedSet = new Set(checkedUris);
           return {
+            pageCursors, hasMore, files, unreadableDirectories: [...unreadableDirectories],
+            headVerifications: gitInspection.headVerifications,
+            checkedUris,
+            attemptedUris: [...new Set([...resources, ...unreadableResources].map(({ uri }) => uri.toString()).concat([...attemptedDirectories]))],
             completedAt: new Date(),
+            scopeLabel: scope?.label,
             scannedCount,
             skippedCount: skippedFiles.length,
             skippedFiles,
@@ -582,7 +647,7 @@ export class WorkspaceEncodingScanner {
             ),
             gitStatuses: buildGitStatuses(
               folders,
-              comparisonResources,
+              comparisonResources.filter(({ uri }) => checkedSet.has(uri.toString())),
               gitInspection,
               this.configurationFor,
             ),
@@ -590,6 +655,10 @@ export class WorkspaceEncodingScanner {
         },
       );
     } finally {
+      if (!committed) for (const reader of createdReaders) {
+        this.readers.delete(reader);
+        await reader.dispose().catch(() => undefined);
+      }
       progressCancellation?.dispose();
       externalCancellation?.dispose();
       linkedCancellation.dispose();
@@ -741,4 +810,10 @@ function buildGitStatuses(
     });
   }
   return statuses;
+}
+
+
+function scanDisplayPath(resource: ScanResource): string {
+  const relative = path.relative(resource.folder.uri.fsPath, resource.uri.fsPath).replaceAll(path.sep, "/");
+  return (vscode.workspace.workspaceFolders?.length ?? 0) > 1 ? `${resource.folder.name}/${relative}` : relative;
 }
