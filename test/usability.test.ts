@@ -64,6 +64,7 @@ async function harness(t: TestContext, input: Record<string, string | Uint8Array
   const information: string[] = [];
   const shownPicks: { items: Record<string, unknown>[]; title?: string }[] = [];
   const searchPatterns: string[] = [];
+  const searchLimits: number[] = [];
   let treeChanges = 0;
   let decorationChanges = 0;
   const commands = new Map<string, (...args: unknown[]) => Promise<unknown>>();
@@ -83,7 +84,7 @@ async function harness(t: TestContext, input: Record<string, string | Uint8Array
         if (value === undefined) config.delete(key); else config.set(key, value); events.get("configuration")?.fire({ affectsConfiguration: () => true });
       },
     }),
-    findFiles: async (pattern: { pattern: string; base?: Uri | { uri: Uri } }, exclude: string, limit: number) => { searchPatterns.push(pattern.pattern); return Object.keys(input)
+    findFiles: async (pattern: { pattern: string; base?: Uri | { uri: Uri } }, exclude: string, limit: number) => { searchPatterns.push(pattern.pattern); searchLimits.push(limit); return Object.keys(input)
       .filter((name) => { const base = pattern.base && ("uri" in pattern.base ? pattern.base.uri : pattern.base); return !base || path.join(root, name).startsWith(base.fsPath + path.sep); })
       .filter((name) => minimatch(name, pattern.pattern, { dot: true }) && !minimatch(name, exclude, { dot: true }))
       .slice(0, limit).map((name) => Uri.file(path.join(root, name))); },
@@ -150,7 +151,7 @@ async function harness(t: TestContext, input: Record<string, string | Uint8Array
   subscriptions.push(provider!.onDidChangeTreeData(() => { treeChanges++; }), decorations!.onDidChangeFileDecorations(() => { decorationChanges++; }));
   t.after(() => subscriptions.forEach((item) => item.dispose()));
   return {
-    config, configFailures, state, messages, window, workspace, runtime, picks, confirmations, information, shownPicks, searchPatterns,
+    config, configFailures, state, messages, window, workspace, runtime, picks, confirmations, information, shownPicks, searchPatterns, searchLimits,
     changes: () => ({ tree: treeChanges, decorations: decorationChanges }),
     command: (name: string, ...args: unknown[]) => commands.get(`folderEncodingGuard.${name}`)!(...args),
     selection: () => runtime.selectConversion(context, () => undefined,
@@ -235,7 +236,11 @@ test("configured folders retain rule-scoped scanning and the file limit", async 
   h.config.set("rules", []);
   h.config.set("maxScanFiles", 1);
   await h.scan();
-  assert.ok(h.messages.some((message) => message.includes("1 件を超えました")));
+  assert.ok(h.rows().some((row) => String(row.description).includes("続きあり")));
+  assert.equal(h.rows().filter((row) => row.contextValue === "scannedFile").length, 1);
+  await h.command("continueScan");
+  assert.equal(h.rows().filter((row) => row.contextValue === "scannedFile").length, 2);
+  assert.equal(h.badge("outside.md")?.badge, "↵");
 });
 
 test("document and byte inspection agree on CR, CRLF, LF, empty and non-ASCII text", () => {
@@ -672,4 +677,92 @@ test("scoped refresh removes deleted baselines while keeping unselected files", 
     assert.ok(baseline[outside]);
     assert.equal(baseline[removed], undefined);
   }
+});
+
+
+test("large folders expose the first 100 files without scanning or listing everything", async (t) => {
+  const input = Object.fromEntries(Array.from({ length: 5101 }, (_, i) => [`file-${String(i).padStart(4, "0")}.txt`, "hello\n"]));
+  const h = await harness(t, input);
+  await h.command("scanSelection", h.uri(""));
+  assert.deepEqual(h.searchLimits, [101]);
+  let rows = h.rows().filter((row) => row.contextValue === "scannedFile");
+  assert.equal(rows.length, 100);
+  assert.match(String(rows[0]?.description), /ASCII互換 \/ LF · 注意なし/);
+  assert.equal(rows[0]?.command?.command, "vscode.open");
+  assert.ok(h.rows().some((row) => row.label === "続きを解析（最大100件）"));
+  await h.command("continueScan");
+  assert.deepEqual(h.searchLimits, [101, 201]);
+  rows = h.rows().filter((row) => row.contextValue === "scannedFile");
+  assert.equal(rows.length, 100);
+  assert.equal(rows[0]?.label, "file-0100.txt");
+  assert.match(String(h.rows().find((row) => row.label === "状況")?.description), /確認済み 200 件/);
+  await h.command("showFilesPage", -1);
+  assert.equal(h.rows().find((row) => row.contextValue === "scannedFile")?.label, "file-0000.txt");
+  assert.deepEqual(h.messages.filter((message) => message.includes("件を超えました")), []);
+});
+
+test("continuation reaches the end without retrying skipped files or duplicating findings", async (t) => {
+  const h = await harness(t, { "large.txt": "a".repeat(2048), "mixed.txt": "a\r\nb\n", "ok.txt": "hello\n" });
+  h.config.set("maxScanFiles", 1);
+  h.config.set("maxFileSizeKB", 1);
+  await h.scan();
+  await h.command("continueScan");
+  await h.command("continueScan");
+  assert.match(String(h.rows().find((row) => row.label === "状況")?.description), /確認済み 2 件 · 未確認 1 件/);
+  assert.ok(!h.rows().some((row) => row.label === "続きを解析（最大100件）"));
+  assert.equal(h.rows().filter((row) => row.contextValue === "mixedLineEndingFinding").length, 1);
+  const before = h.searchPatterns.length;
+  await h.command("continueScan");
+  assert.equal(h.searchPatterns.length, before);
+});
+
+test("page cancellation preserves the cursor and refresh restarts the small preview", async (t) => {
+  const h = await harness(t, { "a.txt": "日本語\n", "b.txt": "日本語\n" });
+  h.config.set("maxScanFiles", 1);
+  await h.scan();
+  h.duringDecode(() => h.cancelProgress());
+  await h.command("continueScan");
+  assert.match(String(h.rows().find((row) => row.label === "状況")?.description), /確認済み 1 件/);
+  h.duringDecode(() => {});
+  await h.command("continueScan");
+  assert.match(String(h.rows().find((row) => row.label === "状況")?.description), /確認済み 2 件/);
+  await h.scan();
+  assert.match(String(h.rows().find((row) => row.label === "状況")?.description), /確認済み 1 件/);
+});
+
+test("filtered candidates advance the cursor and do not erase unseen baselines", async (t) => {
+  const h = await harness(t, { "skip.md": "hello\n", "keep.txt": "日本語\n" });
+  h.config.set("rules", [{ pattern: "*.txt", encoding: "utf8" }]);
+  await h.scan();
+  const key = h.uri("keep.txt").toString();
+  const before = (h.state.get("encodingBaseline.v1") as Record<string, unknown>)[key];
+  h.config.set("maxScanFiles", 1);
+  await h.scan();
+  assert.deepEqual((h.state.get("encodingBaseline.v1") as Record<string, unknown>)[key], before);
+  await h.command("continueScan");
+  assert.ok(h.rows().some((row) => row.contextValue === "scannedFile" && row.label === "keep.txt"));
+  assert.ok(!h.rows().some((row) => row.label === "続きを解析（最大100件）"));
+});
+
+
+test("nested roots can be paged without exceeding limits or recounting their files", async (t) => {
+  const h = await harness(t, { "a.txt": "hello\n", "nested/b.txt": "hello\n" });
+  h.workspace.workspaceFolders.push({ uri: h.uri("nested"), name: "nested", index: 1 });
+  h.config.set("maxScanFiles", 1);
+  await h.command("scanSelection", h.uri(""));
+  await h.command("continueScan");
+  assert.match(String(h.rows().find((row) => row.label === "状況")?.description), /確認済み 2 件/);
+  assert.ok(!h.rows().some((row) => row.label === "続きを解析（最大100件）"));
+});
+
+test("findings from individually added workspace roots keep their identity", async (t) => {
+  const h = await harness(t, { "left/a.txt": "a\r\nb\n", "right/a.txt": "a\r\nb\n" });
+  h.workspace.workspaceFolders.splice(0, 1,
+    { uri: h.uri("left"), name: "left", index: 0 },
+    { uri: h.uri("right"), name: "right", index: 1 });
+  await h.command("scanSelection", h.uri("left/a.txt"));
+  await h.command("addScanSelection", h.uri("right/a.txt"));
+  const findings = h.rows().filter((row) => row.contextValue === "mixedLineEndingFinding");
+  assert.deepEqual(findings.map((row) => row.label).sort(), ["left/a.txt", "right/a.txt"]);
+  assert.ok(findings.every((row) => String(row.tooltip).includes(row.resourceUri!.fsPath)));
 });

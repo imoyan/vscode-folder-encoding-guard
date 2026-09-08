@@ -83,6 +83,7 @@ export function activate(context: vscode.ExtensionContext): void {
     scanRevision += 1;
     scanHasResult = false;
     retainedSnapshot = undefined;
+    void vscode.commands.executeCommand("setContext", "folderEncodingGuard.hasMore", false);
     additionScope = undefined;
     scanCancellation?.cancel();
     rulesProvider.invalidateSnapshot(changed);
@@ -118,6 +119,7 @@ export function activate(context: vscode.ExtensionContext): void {
           () => { scanCancelledByUser = true; },
           additionScope === "workspace" ? undefined : additionScope ?? scanScope,
           new Set(retainedSnapshot?.checkedUris),
+          additionScope ? undefined : retainedSnapshot,
         );
         if (snapshot && revision === scanRevision && !(await previousHeadsCurrent())) {
           invalidateScan(true);
@@ -127,6 +129,7 @@ export function activate(context: vscode.ExtensionContext): void {
         if (snapshot && revision === scanRevision) {
           scanHasResult = true;
           retainedSnapshot = { ...(retainedSnapshot ? appendScanSnapshot(retainedSnapshot, snapshot) : snapshot), scopeLabel: scanScope?.label };
+          void vscode.commands.executeCommand("setContext", "folderEncodingGuard.hasMore", !!retainedSnapshot.hasMore);
           rulesProvider.setSnapshot(retainedSnapshot);
           decorationProvider.setSnapshot(retainedSnapshot);
           void notifyGitIssues(context, snapshot.gitStatuses);
@@ -301,6 +304,11 @@ export function activate(context: vscode.ExtensionContext): void {
         }
       } finally { additionScope = undefined; choosingScope = false; }
     }),
+    vscode.commands.registerCommand("folderEncodingGuard.continueScan", async () => {
+      if (choosingScope || scanCancellation || !retainedSnapshot?.hasMore) return;
+      await runScan();
+    }),
+    vscode.commands.registerCommand("folderEncodingGuard.showFilesPage", (direction: number) => rulesProvider.showFilesPage(direction)),
     vscode.commands.registerCommand("folderEncodingGuard.inspectActiveFile", inspectActiveFile),
     vscode.commands.registerCommand(
       "folderEncodingGuard.convertFolder",

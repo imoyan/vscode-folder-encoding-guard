@@ -30,7 +30,7 @@ export class RuleItem extends vscode.TreeItem {
   }
 }
 
-type GroupKind = "rules" | "summary" | "findings" | "allowances" | "scope" | "skipped";
+type GroupKind = "rules" | "summary" | "findings" | "allowances" | "scope" | "skipped" | "files";
 
 export class MixedAllowanceItem extends vscode.TreeItem {
   public override readonly contextValue = "mixedAllowance";
@@ -55,7 +55,7 @@ class GroupItem extends vscode.TreeItem {
     super(label, vscode.TreeItemCollapsibleState.Expanded);
     this.description = description;
     this.iconPath = new vscode.ThemeIcon(
-      kind === "rules" ? "list-tree" : kind === "summary" ? "graph" : "warning",
+      kind === "rules" || kind === "files" ? "list-tree" : kind === "summary" ? "graph" : "warning",
     );
   }
 }
@@ -198,6 +198,7 @@ export class FindingItem extends vscode.TreeItem {
       this.description = [change, this.description].filter(Boolean).join(" · ");
       this.tooltip = [change, this.tooltip].filter(Boolean).join("\n");
     }
+    this.tooltip = [finding.uri.fsPath, this.tooltip].filter(Boolean).join("\n");
   }
 }
 
@@ -215,6 +216,13 @@ export class RulesProvider implements vscode.TreeDataProvider<ViewItem> {
   public readonly onDidChangeTreeData = this.changed.event;
   private snapshot: EncodingScanSnapshot | undefined;
   private needsRescan = false;
+  private filePageStart = 0;
+
+  public showFilesPage(direction: number): void {
+    const last = Math.max(0, Math.floor(((this.snapshot?.files?.length ?? 1) - 1) / 100) * 100);
+    this.filePageStart = Math.max(0, Math.min(last, this.filePageStart + (direction < 0 ? -100 : 100)));
+    this.refresh();
+  }
   private scopeLabel: string | undefined;
 
   public setScope(label: string | undefined): void { this.scopeLabel = label; this.refresh(); }
@@ -224,6 +232,9 @@ export class RulesProvider implements vscode.TreeDataProvider<ViewItem> {
   }
 
   public setSnapshot(snapshot: EncodingScanSnapshot | undefined): void {
+    if (snapshot && (snapshot.files?.length ?? 0) > (this.snapshot?.files?.length ?? 0)) {
+      this.filePageStart = Math.floor((this.snapshot?.files?.length ?? 0) / 100) * 100;
+    }
     this.snapshot = snapshot;
     this.scopeLabel = snapshot?.scopeLabel;
     this.needsRescan = false;
@@ -233,6 +244,7 @@ export class RulesProvider implements vscode.TreeDataProvider<ViewItem> {
   public invalidateSnapshot(changed: boolean): void {
     this.needsRescan = changed;
     this.snapshot = undefined;
+    this.filePageStart = 0;
     this.refresh();
   }
 
@@ -247,7 +259,7 @@ export class RulesProvider implements vscode.TreeDataProvider<ViewItem> {
         0,
       );
       const statusDescription = this.snapshot
-        ? `確認済み ${this.snapshot.scannedCount} 件 · 未確認 ${this.snapshot.skippedCount} 件 · ${formatScanTime(this.snapshot.completedAt)}`
+        ? `確認済み ${this.snapshot.scannedCount} 件 · 未確認 ${this.snapshot.skippedCount} 件${this.snapshot.hasMore ? "（解析済み範囲内）· 続きあり" : ""} · ${formatScanTime(this.snapshot.completedAt)}`
         : this.needsRescan ? "変更あり・再確認が必要" : "未スキャン";
       const allowanceCount = (vscode.workspace.workspaceFolders ?? []).reduce(
         (count, folder) => count + getAllowedMixedLineEndings(folder).length + getDisallowedMixedLineEndings(folder).length, 0,
@@ -256,6 +268,7 @@ export class RulesProvider implements vscode.TreeDataProvider<ViewItem> {
         new GroupItem("scope", "確認範囲", this.scopeLabel ?? "範囲を選んで解析できます"),
         new GroupItem("rules", "期待する文字コード", `${ruleCount} 件 · 上の設定を優先`),
         new GroupItem("summary", "状況", statusDescription),
+        ...(this.snapshot ? [new GroupItem("files", "解析したファイル", `${this.snapshot.scannedCount ? this.filePageStart + 1 : 0}–${Math.min(this.filePageStart + 100, this.snapshot.scannedCount)} / ${this.snapshot.scannedCount} 件`)] : []),
         new GroupItem("findings", "要注意", this.snapshot ? `${this.snapshot.findings.length} 件` : "未確認"),
         ...(this.snapshot?.skippedCount ? [new GroupItem("skipped", "未確認の内訳", `${this.snapshot.skippedCount} 件`)] : []),
         ...(allowanceCount > 0 ? [new GroupItem("allowances", "改行混在の扱い", `${allowanceCount} 件`)] : []),
@@ -274,7 +287,7 @@ export class RulesProvider implements vscode.TreeDataProvider<ViewItem> {
         scope.tooltip = [folder.uri.fsPath,
           rules.length ? `対象: ${rules.map((rule) => rule.pattern).join(", ")}` : "対象: **/*",
           `除外: ${config.get("conversionExclude", DEFAULT_SCAN_EXCLUDE)}`,
-          `上限: ${config.get("maxScanFiles", 5000)} ファイル / 1ファイル ${configuredFileSizeLimit(config.get("maxFileSizeKB", 5120)) / 1024} KiB`,
+          `1回: 最大${Math.min(100, config.get<number>("maxScanFiles", 5000))} 候補 / 1ファイル ${configuredFileSizeLimit(config.get("maxFileSizeKB", 5120)) / 1024} KiB`,
         ].join("\n");
         return scope;
       });
@@ -299,6 +312,34 @@ export class RulesProvider implements vscode.TreeDataProvider<ViewItem> {
         : "「範囲を選んで解析」で1ファイルから確認できます（設定は任意）")];
     }
     const snapshot = this.snapshot;
+    if (item.kind === "files") {
+      const findings = new Set(snapshot.findings.map((finding) => finding.uri.toString()));
+      const rows = (snapshot.files ?? []).slice(this.filePageStart, this.filePageStart + 100).map((file) => {
+        const row = new MessageItem(file.displayPath);
+        row.contextValue = "scannedFile";
+        row.description = `${summaryLabel(file.encoding)} / ${lineEndingLabel(file.lineEnding)} · ${findings.has(file.uri.toString()) ? "要注意" : "注意なし"}`;
+        row.tooltip = `${file.uri.fsPath}\n${row.description}\n文字コードは内容からの判定です。ASCII互換・判定不明は一意に確定できません。`;
+        row.resourceUri = file.uri;
+        row.command = { command: "vscode.open", title: "ファイルを開く", arguments: [file.uri] };
+        return row;
+      });
+      for (const [label, direction, show] of [
+        ["前の100件を表示", -1, this.filePageStart > 0],
+        ["次の100件を表示", 1, (snapshot.files?.length ?? 0) > this.filePageStart + 100],
+      ] as const) {
+        if (!show) continue;
+        const more = new MessageItem(label);
+        more.command = { command: "folderEncodingGuard.showFilesPage", title: label, arguments: [direction] };
+        rows.push(more);
+      }
+      if (snapshot.hasMore) {
+        const more = new MessageItem("続きを解析（最大100件）");
+        more.description = "全体の件数はまだ未確定です";
+        more.command = { command: "folderEncodingGuard.continueScan", title: "続きを解析" };
+        rows.push(more);
+      }
+      return rows.length ? rows : [new MessageItem("確認できたファイルはありません")];
+    }
     if (item.kind === "skipped") {
       return (snapshot.skippedFiles ?? []).map((file) => {
         const row = new MessageItem(file.displayPath);
@@ -431,6 +472,7 @@ function summaryLabel(encoding: string): string {
 }
 
 function lineEndingLabel(value: string): string {
+  if (value === "unknown") return "判定不明";
   if (value === "lf") {
     return "LF";
   }

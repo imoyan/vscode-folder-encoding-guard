@@ -139,6 +139,15 @@
         "command": "folderEncodingGuard.addScanSelection",
         "title": "文字コード・改行チェック: 範囲を追加して解析",
         "icon": "$(add)"
+      },
+      {
+        "command": "folderEncodingGuard.continueScan",
+        "title": "文字コード・改行チェック: 続きを解析（最大100件）",
+        "icon": "$(debug-continue)"
+      },
+      {
+        "command": "folderEncodingGuard.showFilesPage",
+        "title": "文字コード・改行チェック: 解析一覧のページを移動"
       }
     ],
     "configuration": {
@@ -236,7 +245,7 @@
           "default": 5000,
           "minimum": 1,
           "maximum": 50000,
-          "description": "文字コードのスキャンと一括変換で走査するファイル数の上限です。"
+          "description": "1回の解析で調べる検索候補数の上限です。操作ごとに最大100件まで解析し、残りは「続きを解析」で進めます。"
         },
         "folderEncodingGuard.maxFileSizeKB": {
           "type": "integer",
@@ -317,6 +326,11 @@
           "command": "folderEncodingGuard.addScanSelection",
           "when": "view == folderEncodingGuard.rulesView && folderEncodingGuard.hasScanScope && !folderEncodingGuard.scanning",
           "group": "navigation@3"
+        },
+        {
+          "command": "folderEncodingGuard.continueScan",
+          "when": "view == folderEncodingGuard.rulesView && folderEncodingGuard.hasMore && !folderEncodingGuard.scanning",
+          "group": "navigation@2"
         }
       ],
       "view/item/context": [
@@ -397,6 +411,10 @@
         },
         {
           "command": "folderEncodingGuard.acknowledgeLineEndingChange",
+          "when": "false"
+        },
+        {
+          "command": "folderEncodingGuard.showFilesPage",
           "when": "false"
         }
       ]

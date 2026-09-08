@@ -19,8 +19,11 @@ export function appendScanSnapshot(previous: EncodingScanSnapshot, next: Encodin
       : kinds.includes("active") ? "active" : status.kind;
     statuses.set(key, { ...status, kind, matchedFileCount: status.matchedFileCount + (old?.matchedFileCount ?? 0), unmanagedFileCount: status.unmanagedFileCount + (old?.unmanagedFileCount ?? 0) });
   }
+  const pageCursors = [...new Map([...(previous.pageCursors ?? []), ...(next.pageCursors ?? [])].map((cursor) => [cursor.key, cursor])).values()];
   return {
     ...next,
+    pageCursors, hasMore: pageCursors.some((cursor) => !cursor.complete),
+    files: [...(previous.files ?? []), ...(next.files ?? [])],
     headVerifications: [...(previous.headVerifications ?? []), ...(next.headVerifications ?? [])],
     checkedUris: [...(previous.checkedUris ?? []), ...(next.checkedUris ?? [])],
     attemptedUris: [...new Set([...(previous.attemptedUris ?? []), ...(next.attemptedUris ?? [])])],

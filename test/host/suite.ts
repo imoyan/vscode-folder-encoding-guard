@@ -206,6 +206,25 @@ export async function run(): Promise<void> {
   assert.ok(await finding(mixed));
   assert.ok(await finding(changed));
 
+  const previewFolder = vscode.Uri.joinPath(plain.uri, "preview");
+  await vscode.workspace.fs.createDirectory(previewFolder);
+  const lastPreview = vscode.Uri.joinPath(previewFolder, "preview-120.txt");
+  await withObservedFileChange(lastPreview, async () => {
+    await Promise.all(Array.from({ length: 121 }, (_, index) => vscode.workspace.fs.writeFile(
+      vscode.Uri.joinPath(previewFolder, `preview-${String(index).padStart(3, "0")}.txt`), new TextEncoder().encode("hello\n"),
+    )));
+  });
+  await command("scanSelection", previewFolder);
+  assert.equal((await items("files")).filter((item) => item.contextValue === "scannedFile").length, 100);
+  assert.ok((await items("files")).some((item) => item.command?.command === "folderEncodingGuard.continueScan"));
+  await command("continueScan");
+  const fileRows = (await items("files")).filter((item) => item.contextValue === "scannedFile");
+  assert.equal(fileRows.length, 21);
+  assert.ok(fileRows.every((item) => item.description?.toString().includes("ASCII互換 / LF · 注意なし")));
+  assert.ok(!(await items("files")).some((item) => item.command?.command === "folderEncodingGuard.continueScan"));
+  await command("showFilesPage", -1);
+  assert.equal((await items("files")).filter((item) => item.contextValue === "scannedFile").length, 100);
+
   assert.deepEqual(picks, []);
   assert.deepEqual(confirmations, []);
   assert.deepEqual(errors, []);
