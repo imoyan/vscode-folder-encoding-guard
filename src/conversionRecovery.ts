@@ -1,3 +1,4 @@
+import { recordEncodingOperation } from "./encodingOperations.js";
 import * as vscode from "vscode";
 import { conversionBackupReadLimit } from "./conversionCore.js";
 import {
@@ -28,7 +29,7 @@ export async function restoreLastConversion(
 ): Promise<boolean> {
   const stored = context.workspaceState.get<string>(LAST_BACKUP_KEY);
   if (!stored) {
-    void vscode.window.showInformationMessage("このワークスペースで元に戻せる一括変換はありません。");
+    void vscode.window.showInformationMessage("このワークスペースで元に戻せる変換はありません。");
     return false;
   }
   const sessionUri = vscode.Uri.parse(stored);
@@ -37,7 +38,7 @@ export async function restoreLastConversion(
     return false;
   }
   const confirm = await vscode.window.showWarningMessage(
-    "直前の一括変換を元に戻します。変換後に編集されたファイルは上書きせずスキップします。",
+    "直前の変換を元に戻します。変換後に編集されたファイルは上書きせずスキップします。",
     { modal: true },
     "元に戻す",
   );
@@ -154,6 +155,7 @@ export async function restoreLastConversion(
           continue;
         }
         await vscode.workspace.fs.writeFile(resolvedUri, backup);
+        recordEncodingOperation(originalUri, "restore", currentHash === record.convertedHash ? record.targetEncoding : "unknown", record.sourceEncoding);
         await reopenCleanDocument(originalUri, record.sourceEncoding);
         restored += 1;
       } catch {

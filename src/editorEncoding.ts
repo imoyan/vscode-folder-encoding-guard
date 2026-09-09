@@ -1,3 +1,4 @@
+import { recordEncodingOperation } from "./encodingOperations.js";
 import * as path from "node:path";
 import * as vscode from "vscode";
 import { classifyTextLineEndings, classifyLineEndings } from "./scanCore.js";
@@ -124,10 +125,12 @@ async function reopenWithEncoding(document: vscode.TextDocument, encoding: strin
   if (openingDocuments.has(key)) return;
   openingDocuments.add(key);
   const comparison = activeComparison();
+  const previousEncoding = document.encoding;
   try {
     const reopened = await vscode.workspace.openTextDocument(document.uri, {
       encoding,
     });
+    if (previousEncoding !== reopened.encoding) recordEncodingOperation(document.uri, "reopen", previousEncoding, reopened.encoding);
     if (comparison && [comparison.original, comparison.modified].some((uri) => uri.toString() === document.uri.toString())) {
       await vscode.commands.executeCommand("vscode.diff", comparison.original, comparison.modified,
         `${path.basename(comparison.modified.fsPath)} — ${comparisonLabel(comparison)}`, { preview: false });

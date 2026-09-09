@@ -1,3 +1,5 @@
+import { EncodingInventory } from "./encodingInventory.js";
+import { EncodingOperationLog, onEncodingOperation, recordEncodingOperation } from "./encodingOperations.js";
 import { retainGitVerifications } from "./gitPolicySnapshot.js";
 import { verifyGitInspectionHeads } from "./gitIntegration.js";
 import { configureMixedPolicy, readMixedPolicy, writeMixedPolicy } from "./mixedPolicy.js";
@@ -38,6 +40,9 @@ import { configureFolder, removeRule, editRule, moveRule } from "./ruleCommands.
 import { acknowledgeEncodingChange, removeMixedAllowance } from "./encodingCommands.js";
 
 export function activate(context: vscode.ExtensionContext): void {
+  const operations = new EncodingOperationLog(context.workspaceState);
+  const inventory = new EncodingInventory(operations);
+  context.subscriptions.push(inventory, onEncodingOperation(entry => { operations.append(entry); if (entry.kind !== "reopen") inventory.invalidate(true); else inventory.refresh(); }));
   const rulesProvider = new RulesProvider();
   const decorationProvider = new EncodingDecorationProvider();
   const diagnostics = vscode.languages.createDiagnosticCollection("folderEncodingGuard");
@@ -49,7 +54,8 @@ export function activate(context: vscode.ExtensionContext): void {
     context,
     (uri) => resolveRule(uri)?.rule.encoding,
     (scope) => configurationFor(scope),
-    () => invalidateScan(),
+    () => invalidateScan(true),
+    (active) => inventory.setConversionActive(active),
   );
   const scanner = new WorkspaceEncodingScanner(
     context.workspaceState,
@@ -89,6 +95,7 @@ export function activate(context: vscode.ExtensionContext): void {
     void vscode.commands.executeCommand("setContext", "folderEncodingGuard.hasMore", false);
     additionScope = undefined;
     scanCancellation?.cancel();
+    inventory.invalidate(changed);
     rulesProvider.invalidateSnapshot(changed);
     decorationProvider.setSnapshot(undefined);
   };
@@ -133,6 +140,7 @@ export function activate(context: vscode.ExtensionContext): void {
           scanHasResult = true;
           retainedSnapshot = { ...(retainedSnapshot ? appendScanSnapshot(retainedSnapshot, snapshot) : { ...snapshot, headVerifications: retainGitVerifications(snapshot.headVerifications ?? []) }), scopeLabel: scanScope?.label };
           void vscode.commands.executeCommand("setContext", "folderEncodingGuard.hasMore", !!retainedSnapshot.hasMore);
+          inventory.update({ ...retainedSnapshot, scopeLabel: retainedSnapshot.scopeLabel ?? "ワークスペース全体（ルール設定のあるフォルダーはルール対象のみ）" });
           rulesProvider.setSnapshot(retainedSnapshot);
           decorationProvider.setSnapshot(retainedSnapshot);
           void notifyGitIssues(context, retainedSnapshot.gitStatuses);
@@ -200,6 +208,7 @@ export function activate(context: vscode.ExtensionContext): void {
   );
 
   const updateDocumentState = (document: vscode.TextDocument): void => {
+    inventory.refresh();
     const diagnostic = diagnosticFor(document);
     diagnostics.set(document.uri, diagnostic ? [diagnostic] : []);
     if (vscode.window.activeTextEditor?.document === document) {
@@ -224,10 +233,12 @@ export function activate(context: vscode.ExtensionContext): void {
     const config = configurationFor(match.folder);
     if (config.get("autoReopen", false) && !document.isDirty) {
       reopening.add(key);
+      const previousEncoding = document.encoding;
       try {
         const reopened = await vscode.workspace.openTextDocument(document.uri, {
           encoding: match.rule.encoding,
         });
+        if (previousEncoding !== reopened.encoding) recordEncodingOperation(document.uri, "reopen", previousEncoding, reopened.encoding);
         updateDocumentState(reopened);
         return;
       } catch (error) {
@@ -272,6 +283,23 @@ export function activate(context: vscode.ExtensionContext): void {
     ),
     vscode.commands.registerCommand("folderEncodingGuard.configureMixedPolicy", (uri?: vscode.Uri) => configureMixedPolicy(uri, settingsQueue)),
     vscode.commands.registerCommand("folderEncodingGuard.configureFile", (uri?: vscode.Uri) => configureFolder(uri, rulesProvider, decorationProvider, settingsQueue, true)),
+    vscode.commands.registerCommand("folderEncodingGuard.inspectFolderInventory", async (uri?: vscode.Uri) => {
+      if (choosingScope || scanCancellation) return;
+      choosingScope = true;
+      try {
+        const folder = uri ?? (await vscode.window.showOpenDialog({ canSelectFiles: false, canSelectFolders: true, canSelectMany: false, title: "文字コードを調べるフォルダー", openLabel: "このフォルダーを調べる" }))?.[0];
+        if (!folder) return;
+        const selected = await selectScanScope(folder);
+        if (!selected || selected === "workspace" || !selected.targets.every(target => target.directory)) return;
+        scanScope = selected;
+        rulesProvider.setScope(scanScope.label);
+        await vscode.commands.executeCommand("setContext", "folderEncodingGuard.hasScanScope", true);
+        invalidateScan();
+        inventory.show();
+        await runScan();
+      } finally { choosingScope = false; }
+    }),
+    vscode.commands.registerCommand("folderEncodingGuard.showInventory", () => inventory.show()),
     vscode.commands.registerCommand("folderEncodingGuard.scanSelection", async (uri?: vscode.Uri, selected?: readonly vscode.Uri[]) => {
       if (choosingScope || scanCancellation) return;
       choosingScope = true;
@@ -319,6 +347,7 @@ export function activate(context: vscode.ExtensionContext): void {
     }),
     vscode.commands.registerCommand("folderEncodingGuard.showFilesPage", (direction: number) => rulesProvider.showFilesPage(direction)),
     vscode.commands.registerCommand("folderEncodingGuard.inspectActiveFile", inspectActiveFile),
+    vscode.commands.registerCommand("folderEncodingGuard.convertFile", (uri?: vscode.Uri) => conversionManager.convertFile(uri)),
     vscode.commands.registerCommand(
       "folderEncodingGuard.convertFolder",
       async (uri?: vscode.Uri) => conversionManager.convertFolder(uri),
@@ -431,6 +460,7 @@ export function activate(context: vscode.ExtensionContext): void {
       const key = document.uri.toString();
       warned.delete(key);
       diagnostics.delete(document.uri);
+      inventory.refresh();
     }),
     vscode.workspace.onWillSaveTextDocument((event) => {
       const match = resolveRule(event.document.uri);
@@ -452,7 +482,7 @@ export function activate(context: vscode.ExtensionContext): void {
     }),
     vscode.workspace.onDidChangeConfiguration((event) => {
       if (event.affectsConfiguration(CONFIGURATION_SECTION)) {
-        invalidateScan();
+        invalidateScan(true);
         vscode.workspace.textDocuments.forEach((document) => void ensureExpectedEncoding(document));
       }
     }),

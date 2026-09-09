@@ -66,6 +66,7 @@ async function harness(t: TestContext, input: Record<string, string | Uint8Array
   const shownPicks: { items: Record<string, unknown>[]; title?: string }[] = [];
   const searchPatterns: string[] = [];
   const searchLimits: number[] = [];
+  const inventoryWebview = { html: "", onDidReceiveMessage: () => ({ dispose() {} }) };
   let treeChanges = 0;
   let decorationChanges = 0;
   const commands = new Map<string, (...args: unknown[]) => Promise<unknown>>();
@@ -106,6 +107,7 @@ async function harness(t: TestContext, input: Record<string, string | Uint8Array
     onDidChangeConfiguration: on("configuration"), onDidChangeWorkspaceFolders: on("folders"),
   };
   const window = {
+    createWebviewPanel: () => ({ webview: inventoryWebview, onDidDispose: () => ({ dispose() {} }), dispose() {}, reveal() {} }),
     activeTextEditor: undefined as { document: unknown } | undefined,
     onDidChangeActiveTextEditor: on("active"),
     createStatusBarItem: () => ({ ...disposable, hide() {}, show() {} }),
@@ -125,7 +127,7 @@ async function harness(t: TestContext, input: Record<string, string | Uint8Array
     },
   };
   const vscode = {
-    workspace, window, Uri, EventEmitter: Emitter, CancellationTokenSource: Cancellation,
+    ViewColumn: { Active: -1 }, workspace, window, Uri, EventEmitter: Emitter, CancellationTokenSource: Cancellation,
     RelativePattern: class { constructor(public base: unknown, public pattern: string) {} },
     TreeItem: class { constructor(public label: string) {} },
     ThemeIcon: class {}, ThemeColor: class {}, MarkdownString: class {},
@@ -160,9 +162,12 @@ async function harness(t: TestContext, input: Record<string, string | Uint8Array
   subscriptions.push(provider!.onDidChangeTreeData(() => { treeChanges++; }), decorations!.onDidChangeFileDecorations(() => { decorationChanges++; }));
   t.after(() => subscriptions.forEach((item) => item.dispose()));
   return {
-    config, configFailures, state, unreadableDirectories, messages, window, workspace, runtime, picks, confirmations, information, shownPicks, searchPatterns, searchLimits,
+    inventoryWebview, config, configFailures, state, unreadableDirectories, messages, window, workspace, runtime, picks, confirmations, information, shownPicks, searchPatterns, searchLimits,
     changes: () => ({ tree: treeChanges, decorations: decorationChanges }),
     command: (name: string, ...args: unknown[]) => commands.get(`folderEncodingGuard.${name}`)!(...args),
+    fileSelection: (name: string, rule?: string) => runtime.selectConversion(context, () => rule,
+      () => workspace.getConfiguration() as unknown as import("vscode").WorkspaceConfiguration,
+      Uri.file(path.join(root, name)) as import("vscode").Uri, undefined, "file"),
     selection: () => runtime.selectConversion(context, () => undefined,
       () => workspace.getConfiguration() as unknown as import("vscode").WorkspaceConfiguration,
       folder.uri as import("vscode").Uri),
@@ -852,4 +857,86 @@ test("unreadable subtrees stay unconfirmed, preserve baselines and allow other f
   assert.ok(!h.rows().some(row => String(row.description).includes("配下は未確認")));
   await h.scan();
   assert.equal(h.rows().filter(row => row.contextValue === "scannedFile").length, 2);
+});
+
+test("single file conversion skips folder enumeration, preserves EOL and confirms rule mismatch", async t => {
+  const h = await harness(t, { "a.txt": "日本語\r\n内部\n", "b.txt": "other" });
+  h.config.set("conversionExclude", "**/*");
+  h.picks.push({ encoding: "utf8bom" }, { encoding: "utf8" });
+  h.confirmations.push("変換する");
+  const selection = await h.fileSelection("a.txt", "utf8");
+  assert.equal(selection?.selected.length, 1);
+  assert.equal(selection?.selected[0]?.uri.toString(), h.uri("a.txt").toString());
+  assert.equal(selection?.targetEncoding, "utf8bom");
+  assert.equal(selection?.targetLineEnding, undefined);
+  assert.deepEqual(h.searchPatterns, []);
+  assert.equal(h.shownPicks.length, 2);
+  assert.ok(h.messages.some(message => message.includes("内容のプレビュー") && message.includes("ルールは変更しません")));
+  assert.equal(await readFile(h.uri("a.txt").fsPath, "utf8"), "日本語\r\n内部\n");
+});
+
+test("single file conversion refuses dirty documents and supports cancelling confirmation", async t => {
+  const h = await harness(t, { "a.txt": "日本語\n" });
+  h.workspace.textDocuments.push({ uri: h.uri("a.txt"), isDirty: true });
+  assert.equal(await h.fileSelection("a.txt"), undefined);
+  assert.equal(h.shownPicks.length, 0);
+  assert.ok(h.messages.some(message => message.includes("先にファイルを保存")));
+  h.workspace.textDocuments.length = 0;
+  h.picks.push({ encoding: "utf8bom" }, { encoding: "utf8" });
+  assert.equal(await h.fileSelection("a.txt"), undefined);
+  assert.equal(await readFile(h.uri("a.txt").fsPath, "utf8"), "日本語\n");
+});
+
+test("single file conversion explains unrepresentable content without saving", async t => {
+  const h = await harness(t, { "a.txt": "日本語\n" });
+  h.picks.push({ encoding: "windows1252" }, { encoding: "utf8" });
+  assert.equal(await h.fileSelection("a.txt"), undefined);
+  assert.ok(h.messages.some(message => message.includes("変換先で表現できない文字")));
+  assert.equal(await readFile(h.uri("a.txt").fsPath, "utf8"), "日本語\n");
+});
+
+test("single file conversion reports no change when source and target match", async t => {
+  const h = await harness(t, { "a.txt": "日本語\n" });
+  h.picks.push({ encoding: "utf8" }, { encoding: "utf8" });
+  assert.equal(await h.fileSelection("a.txt"), undefined);
+  assert.ok(h.shownPicks[1]?.items.some(item => item.encoding === "utf8"));
+  assert.ok(h.messages.some(message => message.includes("変換不要")));
+});
+
+test("folder inventory includes unconfigured files, separates read settings and retains stale results", async t => {
+  const h = await harness(t, { "part/a.txt": "日本語\n", "part/b.csv": "data\n", "outside.txt": "other\n" });
+  h.config.set("rules", [{ pattern: "**/*.txt", encoding: "utf8" }]);
+  await h.command("inspectFolderInventory", h.uri("part"));
+  assert.ok(h.inventoryWebview.html.includes("part/a.txt"));
+  assert.ok(h.inventoryWebview.html.includes("part/b.csv"));
+  assert.ok(!h.inventoryWebview.html.includes("outside.txt"));
+  assert.ok(h.inventoryWebview.html.includes("エディターの読み込み"));
+  h.emit("fileChange", "part/a.txt");
+  assert.ok(h.inventoryWebview.html.includes("part/a.txt"));
+  assert.ok(h.inventoryWebview.html.includes("未再確認"));
+  await h.scan();
+  assert.ok(!h.inventoryWebview.html.includes("前回の結果を残しています"));
+});
+
+test("inventory escapes filenames instead of allowing HTML or script injection", async t => {
+  const h = await harness(t, { '<img src=x onerror="bad()">.txt': "hello\n" });
+  await h.command("inspectFolderInventory", h.uri(""));
+  assert.ok(h.inventoryWebview.html.includes("&lt;img"));
+  assert.ok(!h.inventoryWebview.html.includes('<img src=x'));
+  assert.ok(h.inventoryWebview.html.includes("default-src 'none'"));
+});
+
+
+test("workspace inventory identifies its rule-filtered scope", async t => {
+  const h = await harness(t, { "a.txt": "日本語\n", "b.csv": "data\n" });
+  h.config.set("rules", [{ pattern: "**/*.txt", encoding: "utf8" }]);
+  await h.scan();
+  await h.command("showInventory");
+  assert.ok(h.inventoryWebview.html.includes("a.txt"));
+  assert.ok(!h.inventoryWebview.html.includes("b.csv"));
+  assert.ok(h.inventoryWebview.html.includes("ワークスペース全体（ルール設定のあるフォルダーはルール対象のみ）"));
+  assert.ok(!h.inventoryWebview.html.includes("フォルダーを選んで調べてください"));
+  await h.command("inspectFolderInventory", h.uri(""));
+  assert.ok(h.inventoryWebview.html.includes("b.csv"));
+  assert.ok(!h.inventoryWebview.html.includes("ルール対象のみ"));
 });

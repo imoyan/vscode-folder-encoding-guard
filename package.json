@@ -2,7 +2,7 @@
   "name": "folder-encoding-guard",
   "displayName": "文字コード・改行チェック",
   "description": "ファイル／フォルダーごとの期待する文字コードを設定し、文字コード・改行の不一致や変更を確認。選択したファイルをまとめて変換できます。",
-  "version": "0.10.0",
+  "version": "0.11.0",
   "publisher": "yusuke-local",
   "license": "MIT",
   "repository": {
@@ -67,7 +67,7 @@
       },
       {
         "command": "folderEncodingGuard.undoLastConversion",
-        "title": "文字コード・改行チェック: 直前の一括変換を元に戻す",
+        "title": "文字コード・改行チェック: 直前の変換を元に戻す",
         "icon": "$(discard)"
       },
       {
@@ -148,6 +148,19 @@
       {
         "command": "folderEncodingGuard.showFilesPage",
         "title": "文字コード・改行チェック: 解析一覧のページを移動"
+      },
+      {
+        "command": "folderEncodingGuard.convertFile",
+        "title": "文字コード・改行チェック: このファイルの文字コードを変換して保存"
+      },
+      {
+        "command": "folderEncodingGuard.inspectFolderInventory",
+        "title": "文字コード・改行チェック: このフォルダー配下の文字コードを調べて一覧表示",
+        "icon": "$(list-flat)"
+      },
+      {
+        "command": "folderEncodingGuard.showInventory",
+        "title": "文字コード・改行チェック: 文字コード一覧と操作前後を表示"
       }
     ],
     "configuration": {
@@ -302,6 +315,16 @@
           "command": "folderEncodingGuard.configureMixedPolicy",
           "when": "resourceScheme == file",
           "group": "7_modification@52"
+        },
+        {
+          "command": "folderEncodingGuard.convertFile",
+          "when": "resourceScheme == file && !explorerResourceIsFolder",
+          "group": "7_modification@51"
+        },
+        {
+          "command": "folderEncodingGuard.inspectFolderInventory",
+          "when": "resourceScheme == file && explorerResourceIsFolder",
+          "group": "7_modification@48"
         }
       ],
       "editor/title/context": [
@@ -309,6 +332,11 @@
           "command": "folderEncodingGuard.inspectActiveFile",
           "when": "resourceScheme == file",
           "group": "3_preview@50"
+        },
+        {
+          "command": "folderEncodingGuard.convertFile",
+          "when": "resourceScheme == file",
+          "group": "1_modification@50"
         }
       ],
       "view/title": [
@@ -331,6 +359,11 @@
           "command": "folderEncodingGuard.continueScan",
           "when": "view == folderEncodingGuard.rulesView && folderEncodingGuard.hasMore && !folderEncodingGuard.scanning",
           "group": "navigation@2"
+        },
+        {
+          "command": "folderEncodingGuard.showInventory",
+          "when": "view == folderEncodingGuard.rulesView",
+          "group": "navigation@0"
         }
       ],
       "view/item/context": [
@@ -416,6 +449,13 @@
         {
           "command": "folderEncodingGuard.showFilesPage",
           "when": "false"
+        }
+      ],
+      "editor/context": [
+        {
+          "command": "folderEncodingGuard.convertFile",
+          "when": "resourceScheme == file",
+          "group": "1_modification@50"
         }
       ]
     }

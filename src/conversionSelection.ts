@@ -37,8 +37,28 @@ export async function selectConversion(
   configurationFor: (scope: vscode.ConfigurationScope) => vscode.WorkspaceConfiguration,
   suppliedUri?: vscode.Uri,
   suppliedTargetEncoding?: string,
+  scope: "folder" | "file" = "folder",
 ): Promise<ConversionSelection | undefined> {
-  const folderUri = await pickFolder(suppliedUri);
+  const fileUri = scope === "file" ? suppliedUri ?? vscode.window.activeTextEditor?.document.uri ??
+    (await vscode.window.showOpenDialog({ canSelectFiles: true, canSelectFolders: false, canSelectMany: false, title: "文字コードを変換して保存するファイル" }))?.[0] : undefined;
+  if (scope === "file") {
+    if (!fileUri) return undefined;
+    if (fileUri.scheme !== "file") {
+      void vscode.window.showErrorMessage("保存済みのローカルファイルを選択してください。");
+      return undefined;
+    }
+    if (isDirty(fileUri)) {
+      void vscode.window.showWarningMessage("未保存の変更があります。先にファイルを保存してから、文字コードの変換を実行してください。");
+      return undefined;
+    }
+    try {
+      if ((await vscode.workspace.fs.stat(fileUri)).type !== vscode.FileType.File) throw new Error("not a regular file");
+    } catch {
+      void vscode.window.showErrorMessage("変換するファイルを読み取れません。保存済みの通常ファイルを選択してください。");
+      return undefined;
+    }
+  }
+  const folderUri = fileUri ? vscode.Uri.file(path.dirname(fileUri.fsPath)) : await pickFolder(suppliedUri);
   if (!folderUri) {
     return undefined;
   }
@@ -78,7 +98,7 @@ export async function selectConversion(
     }
   }
 
-  const mode = await vscode.window.showQuickPick([
+  const mode = fileUri ? { encoding: true, eol: false } : await vscode.window.showQuickPick([
     { label: "文字コードのみ", encoding: true, eol: false },
     { label: "改行コードのみ", encoding: false, eol: true },
     { label: "文字コードと改行コード", encoding: true, eol: true },
@@ -91,7 +111,7 @@ export async function selectConversion(
   if (mode.eol && !lineEnding) return undefined;
   const targetLineEnding = lineEnding?.value;
   const probeUri = vscode.Uri.joinPath(folderUri, "__folder_encoding_guard_probe__.txt");
-  const ruleTarget = suppliedTargetEncoding ?? expectedEncodingFor(probeUri);
+  const ruleTarget = fileUri ? undefined : suppliedTargetEncoding ?? expectedEncodingFor(probeUri);
   const requestedTarget = mode.encoding
     ? ruleTarget ?? (await pickEncoding("変換先の文字コードを選択"))
     : undefined;
@@ -100,7 +120,7 @@ export async function selectConversion(
   }
   const sourceEncoding = await pickEncoding(
     "現在の文字コードを選択",
-    mode.eol ? undefined : requestedTarget,
+    fileUri || mode.eol ? undefined : requestedTarget,
     "読み込みに使う文字コードです。候補のプレビューを確認してください。",
   );
   if (!sourceEncoding) {
@@ -133,7 +153,7 @@ export async function selectConversion(
       progress.report({ message: "対象ファイルを列挙中" });
       let uris: readonly vscode.Uri[];
       try {
-        uris = await vscode.workspace.findFiles(
+        uris = fileUri ? [fileUri] : await vscode.workspace.findFiles(
           new vscode.RelativePattern(folderUri, "**/*"),
           exclude,
           maxFiles + 1,
@@ -174,7 +194,7 @@ export async function selectConversion(
           continue;
         }
         const fileRuleEncoding = expectedEncodingFor(uri);
-        if (mode.encoding && fileRuleEncoding && fileRuleEncoding !== targetEncoding) {
+        if (!fileUri && mode.encoding && fileRuleEncoding && fileRuleEncoding !== targetEncoding) {
           recordExcluded(uri, "別の文字コードルールが適用されています");
           continue;
         }
@@ -262,6 +282,10 @@ export async function selectConversion(
   }
   const candidates = scanResult.candidates;
 
+  if (fileUri && excluded.length > 0) {
+    void vscode.window.showInformationMessage(`${path.basename(fileUri.fsPath)}: ${excluded[0]!.description}`);
+    return undefined;
+  }
   if (excluded.length > 0) {
     const action = "対象外の理由を見る";
     const choice = await vscode.window.showInformationMessage(
@@ -279,7 +303,7 @@ export async function selectConversion(
     return undefined;
   }
 
-  const selected = await vscode.window.showQuickPick(candidates, {
+  const selected = fileUri ? candidates : await vscode.window.showQuickPick(candidates, {
     canPickMany: true,
     matchOnDescription: true,
     matchOnDetail: true,
@@ -307,7 +331,9 @@ export async function selectConversion(
     ? " 新しい変換が成功すると前回の復元データは削除され、前回の変換は元に戻せなくなります。"
     : "";
   const confirm = await vscode.window.showWarningMessage(
-    `${selected.length} 件を変換します。${conversionDescription}。` +
+    (fileUri ? `${path.basename(fileUri.fsPath)} の文字コードを変換して上書き保存します。${conversionDescription}。` : `${selected.length} 件を変換します。${conversionDescription}。`) +
+      (fileUri && expectedEncodingFor(fileUri) && expectedEncodingFor(fileUri) !== targetEncoding ? "設定されている期待する文字コードと異なります。文字コードルールは変更しません。" : "") +
+      (fileUri ? `\n内容のプレビュー: ${selected[0]!.detail}\n` : "") +
       `判定不確実な選択 ${selected.filter((candidate) => candidate.needsConfirmation).length} 件。` +
       (selected.some((candidate) => candidate.changesAllowedMixedEndings) ? "許容済みの混在も統一します。CSVのセル内改行を含むすべての改行が対象です。" : "") +
       `変換前データ ${formatByteSize(backupBytes)} はローカルへ退避されます。${backupNotice}`,
