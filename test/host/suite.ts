@@ -63,7 +63,7 @@ async function writeObserved(uri: vscode.Uri, bytes: Uint8Array): Promise<void> 
 
 export async function run(): Promise<void> {
   console.log("Folder Encoding Guard Extension Host suite started");
-  const extension = vscode.extensions.getExtension("yusuke-local.folder-encoding-guard");
+  const extension = vscode.extensions.getExtension("encoding-tools.folder-encoding-guard");
   assert.ok(extension);
   await extension.activate();
   const folders = vscode.workspace.workspaceFolders!;

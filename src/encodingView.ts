@@ -553,7 +553,7 @@ export async function notifyGitIssues(
   if (selected === "設定を開く") {
     await vscode.commands.executeCommand(
       "workbench.action.openSettings",
-      "@ext:yusuke-local.folder-encoding-guard",
+      "@ext:encoding-tools.folder-encoding-guard",
     );
   }
 }
