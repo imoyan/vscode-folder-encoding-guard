@@ -152,6 +152,15 @@
       {
         "command": "folderEncodingGuard.convertFile",
         "title": "文字コード・改行チェック: このファイルの文字コードを変換して保存"
+      },
+      {
+        "command": "folderEncodingGuard.inspectFolderInventory",
+        "title": "文字コード・改行チェック: このフォルダー配下の文字コードを調べて一覧表示",
+        "icon": "$(list-flat)"
+      },
+      {
+        "command": "folderEncodingGuard.showInventory",
+        "title": "文字コード・改行チェック: 文字コード一覧と操作前後を表示"
       }
     ],
     "configuration": {
@@ -311,6 +320,11 @@
           "command": "folderEncodingGuard.convertFile",
           "when": "resourceScheme == file && !explorerResourceIsFolder",
           "group": "7_modification@51"
+        },
+        {
+          "command": "folderEncodingGuard.inspectFolderInventory",
+          "when": "resourceScheme == file && explorerResourceIsFolder",
+          "group": "7_modification@48"
         }
       ],
       "editor/title/context": [
@@ -345,6 +359,11 @@
           "command": "folderEncodingGuard.continueScan",
           "when": "view == folderEncodingGuard.rulesView && folderEncodingGuard.hasMore && !folderEncodingGuard.scanning",
           "group": "navigation@2"
+        },
+        {
+          "command": "folderEncodingGuard.showInventory",
+          "when": "view == folderEncodingGuard.rulesView",
+          "group": "navigation@0"
         }
       ],
       "view/item/context": [

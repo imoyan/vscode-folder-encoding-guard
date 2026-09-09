@@ -66,6 +66,7 @@ async function harness(t: TestContext, input: Record<string, string | Uint8Array
   const shownPicks: { items: Record<string, unknown>[]; title?: string }[] = [];
   const searchPatterns: string[] = [];
   const searchLimits: number[] = [];
+  const inventoryWebview = { html: "", onDidReceiveMessage: () => ({ dispose() {} }) };
   let treeChanges = 0;
   let decorationChanges = 0;
   const commands = new Map<string, (...args: unknown[]) => Promise<unknown>>();
@@ -106,6 +107,7 @@ async function harness(t: TestContext, input: Record<string, string | Uint8Array
     onDidChangeConfiguration: on("configuration"), onDidChangeWorkspaceFolders: on("folders"),
   };
   const window = {
+    createWebviewPanel: () => ({ webview: inventoryWebview, onDidDispose: () => ({ dispose() {} }), dispose() {}, reveal() {} }),
     activeTextEditor: undefined as { document: unknown } | undefined,
     onDidChangeActiveTextEditor: on("active"),
     createStatusBarItem: () => ({ ...disposable, hide() {}, show() {} }),
@@ -125,7 +127,7 @@ async function harness(t: TestContext, input: Record<string, string | Uint8Array
     },
   };
   const vscode = {
-    workspace, window, Uri, EventEmitter: Emitter, CancellationTokenSource: Cancellation,
+    ViewColumn: { Active: -1 }, workspace, window, Uri, EventEmitter: Emitter, CancellationTokenSource: Cancellation,
     RelativePattern: class { constructor(public base: unknown, public pattern: string) {} },
     TreeItem: class { constructor(public label: string) {} },
     ThemeIcon: class {}, ThemeColor: class {}, MarkdownString: class {},
@@ -160,7 +162,7 @@ async function harness(t: TestContext, input: Record<string, string | Uint8Array
   subscriptions.push(provider!.onDidChangeTreeData(() => { treeChanges++; }), decorations!.onDidChangeFileDecorations(() => { decorationChanges++; }));
   t.after(() => subscriptions.forEach((item) => item.dispose()));
   return {
-    config, configFailures, state, unreadableDirectories, messages, window, workspace, runtime, picks, confirmations, information, shownPicks, searchPatterns, searchLimits,
+    inventoryWebview, config, configFailures, state, unreadableDirectories, messages, window, workspace, runtime, picks, confirmations, information, shownPicks, searchPatterns, searchLimits,
     changes: () => ({ tree: treeChanges, decorations: decorationChanges }),
     command: (name: string, ...args: unknown[]) => commands.get(`folderEncodingGuard.${name}`)!(...args),
     fileSelection: (name: string, rule?: string) => runtime.selectConversion(context, () => rule,
@@ -899,4 +901,27 @@ test("single file conversion reports no change when source and target match", as
   assert.equal(await h.fileSelection("a.txt"), undefined);
   assert.ok(h.shownPicks[1]?.items.some(item => item.encoding === "utf8"));
   assert.ok(h.messages.some(message => message.includes("変換不要")));
+});
+
+test("folder inventory includes unconfigured files, separates read settings and retains stale results", async t => {
+  const h = await harness(t, { "part/a.txt": "日本語\n", "part/b.csv": "data\n", "outside.txt": "other\n" });
+  h.config.set("rules", [{ pattern: "**/*.txt", encoding: "utf8" }]);
+  await h.command("inspectFolderInventory", h.uri("part"));
+  assert.ok(h.inventoryWebview.html.includes("part/a.txt"));
+  assert.ok(h.inventoryWebview.html.includes("part/b.csv"));
+  assert.ok(!h.inventoryWebview.html.includes("outside.txt"));
+  assert.ok(h.inventoryWebview.html.includes("エディターの読み込み"));
+  h.emit("fileChange", "part/a.txt");
+  assert.ok(h.inventoryWebview.html.includes("part/a.txt"));
+  assert.ok(h.inventoryWebview.html.includes("未再確認"));
+  await h.scan();
+  assert.ok(!h.inventoryWebview.html.includes("前回の結果を残しています"));
+});
+
+test("inventory escapes filenames instead of allowing HTML or script injection", async t => {
+  const h = await harness(t, { '<img src=x onerror="bad()">.txt': "hello\n" });
+  await h.command("inspectFolderInventory", h.uri(""));
+  assert.ok(h.inventoryWebview.html.includes("&lt;img"));
+  assert.ok(!h.inventoryWebview.html.includes('<img src=x'));
+  assert.ok(h.inventoryWebview.html.includes("default-src 'none'"));
 });

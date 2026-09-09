@@ -52,7 +52,7 @@ class GroupItem extends vscode.TreeItem {
     label: string,
     description: string,
   ) {
-    super(label, vscode.TreeItemCollapsibleState.Expanded);
+    super(label, vscode.TreeItemCollapsibleState.Collapsed);
     this.description = description;
     this.iconPath = new vscode.ThemeIcon(
       kind === "rules" || kind === "files" ? "list-tree" : kind === "summary" ? "graph" : "warning",
@@ -264,11 +264,16 @@ export class RulesProvider implements vscode.TreeDataProvider<ViewItem> {
       const allowanceCount = (vscode.workspace.workspaceFolders ?? []).reduce(
         (count, folder) => count + getAllowedMixedLineEndings(folder).length + getDisallowedMixedLineEndings(folder).length, 0,
       );
+      const inventory = new MessageItem("フォルダーを調べて一覧表示");
+      inventory.command = { command: "folderEncodingGuard.inspectFolderInventory", title: "フォルダーを調べて一覧表示" };
+      const previousInventory = new MessageItem("文字コード一覧と操作前後を開く");
+      previousInventory.command = { command: "folderEncodingGuard.showInventory", title: "一覧を開く" };
       return [
+        inventory, previousInventory,
         new GroupItem("scope", "確認範囲", this.scopeLabel ?? "範囲を選んで解析できます"),
-        new GroupItem("rules", "期待する文字コード", `${ruleCount} 件 · 上の設定を優先`),
         new GroupItem("summary", "状況", statusDescription),
-        ...(this.snapshot ? [new GroupItem("files", "解析したファイル", `${this.snapshot.scannedCount ? this.filePageStart + 1 : 0}–${Math.min(this.filePageStart + 100, this.snapshot.scannedCount)} / ${this.snapshot.scannedCount} 件`)] : []),
+        ...(this.snapshot ? [new GroupItem("files", "保存済みファイルの文字コード", `${this.snapshot.scannedCount ? this.filePageStart + 1 : 0}–${Math.min(this.filePageStart + 100, this.snapshot.scannedCount)} / ${this.snapshot.scannedCount} 件`)] : []),
+        new GroupItem("rules", "期待する文字コード", `${ruleCount} 件 · 上の設定を優先`),
         new GroupItem("findings", "要注意", this.snapshot ? `${this.snapshot.findings.length} 件` : "未確認"),
         ...(this.snapshot?.skippedCount ? [new GroupItem("skipped", "未確認の内訳", `${this.snapshot.skippedCount} 件`)] : []),
         ...(allowanceCount > 0 ? [new GroupItem("allowances", "改行混在の扱い", `${allowanceCount} 件`)] : []),
@@ -458,7 +463,7 @@ export class EncodingDecorationProvider implements vscode.FileDecorationProvider
   }
 }
 
-function summaryLabel(encoding: string): string {
+export function summaryLabel(encoding: string): string {
   if (encoding === "ascii") {
     return "ASCII互換";
   }
@@ -471,7 +476,7 @@ function summaryLabel(encoding: string): string {
   return encodingInfo(encoding).label;
 }
 
-function lineEndingLabel(value: string): string {
+export function lineEndingLabel(value: string): string {
   if (value === "unknown") return "判定不明";
   if (value === "lf") {
     return "LF";

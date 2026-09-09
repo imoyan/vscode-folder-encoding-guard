@@ -9,11 +9,15 @@ export const errors: string[] = [];
 export const expectedErrors: string[] = [];
 export const notices: string[] = [];
 export const statusItems: vscode.StatusBarItem[] = [];
+export const inventoryPanels: vscode.WebviewPanel[] = [];
 export const providers = new Map<string, vscode.TreeDataProvider<unknown>>();
 
 // Only human input is substituted. Files, Git, settings, command registration,
 // tree items and Extension Host execution remain the actual VS Code APIs.
 const windowOverrides: Partial<typeof vscode.window> = {
+  createWebviewPanel: ((...args: Parameters<typeof vscode.window.createWebviewPanel>) => {
+    const panel = vscode.window.createWebviewPanel(...args); inventoryPanels.push(panel); return panel;
+  }) as typeof vscode.window.createWebviewPanel,
   createStatusBarItem: ((alignment: vscode.StatusBarAlignment, priority?: number) => {
     const status = vscode.window.createStatusBarItem(alignment, priority);
     statusItems.push(status);

@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import * as vscode from "vscode";
 import { writeFile } from "node:fs/promises";
-import { picks, confirmations, nonModalResponses, providers, errors, expectedErrors, notices, statusItems } from "./hostDriver.js";
+import { picks, confirmations, nonModalResponses, providers, errors, expectedErrors, notices, statusItems, inventoryPanels } from "./hostDriver.js";
 import type { ScanFinding } from "../../src/scanner.js";
 import { readBackupResource } from "../../src/conversionBackup.js";
 
@@ -177,11 +177,15 @@ export async function run(): Promise<void> {
   assert.deepEqual(Buffer.from(await vscode.workspace.fs.readFile(target)), Buffer.from(original));
   const sibling = vscode.Uri.joinPath(conversionFolder, "sibling.txt");
   await writeObserved(sibling, original);
+  await command("inspectFolderInventory", conversionFolder);
+  assert.ok(inventoryPanels.at(-1)?.webview.html.includes("保存済みの文字コード"));
   picks.push({ title: "変換先の文字コード", label: "UTF-8" }, { title: "現在の文字コード", label: "Windows-1252" });
   confirmations.push("変換する");
   assert.equal(await command("convertFile", target), true);
   assert.deepEqual(Buffer.from(await vscode.workspace.fs.readFile(target)), Buffer.from("café\r\n"));
   assert.deepEqual(Buffer.from(await vscode.workspace.fs.readFile(sibling)), Buffer.from(original));
+  assert.ok(inventoryPanels.at(-1)?.webview.html.includes("変換して保存: Windows-1252 → UTF-8"));
+  assert.ok(inventoryPanels.at(-1)?.webview.html.includes("未再確認"));
   confirmations.push("元に戻す");
   assert.equal(await command("undoLastConversion"), true);
   assert.deepEqual(Buffer.from(await vscode.workspace.fs.readFile(target)), Buffer.from(original));
@@ -208,6 +212,9 @@ export async function run(): Promise<void> {
   assert.equal(vscode.window.activeTextEditor?.document.encoding, "utf8");
   assert.ok(statusItems.some((item) => /左 Git版:.*右 作業中:/.test(item.text)), JSON.stringify(statusItems.map((item) => item.text)));
   assert.equal(headDocument.encoding, headEncoding);
+  await command("scanSelection", changed);
+  await command("showInventory");
+  assert.ok(inventoryPanels.at(-1)?.webview.html.includes("表示だけ変更（保存なし）"));
   assert.deepEqual(await vscode.workspace.fs.readFile(changed), bytesBeforeReopen);
   assert.deepEqual(nonModalResponses, []);
 

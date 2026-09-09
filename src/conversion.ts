@@ -1,3 +1,4 @@
+import { recordEncodingOperation } from "./encodingOperations.js";
 import { randomUUID } from "node:crypto";
 import * as vscode from "vscode";
 import {
@@ -361,6 +362,7 @@ export class ConversionManager {
               counts.skippedChanged += 1;
               continue;
             }
+            recordEncodingOperation(candidate.uri, "convert", sourceEncoding, targetEncoding, targetLineEnding);
             await reopenCleanDocument(candidate.uri, targetEncoding);
             counts.converted += 1;
           } catch (error) {

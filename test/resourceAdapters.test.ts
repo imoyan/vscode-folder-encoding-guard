@@ -60,7 +60,9 @@ test("a partial undo write retains recovery state and can be retried", async () 
   let writes = 0;
   let removed = false;
   const prompts: string[] = [];
+  const recorded: unknown[][] = [];
   const recovery = loadModule<{ restoreLastConversion(context: unknown, changed: () => void): Promise<boolean> }>("conversionRecovery.ts", {
+    "./encodingOperations.js": { recordEncodingOperation: (...args: unknown[]) => recorded.push(args) },
     vscode: { Uri: { parse: uri, file: uri, joinPath: (base: { fsPath: string }, name: string) => uri(`${base.fsPath}/${name}`) }, FileType: { File: 1 },
       workspace: { getWorkspaceFolder: () => ({ uri: uri("/workspace") }), fs: {
         readDirectory: async () => [["0.json", 1]], writeFile: async (_uri: unknown, bytes: Uint8Array) => {
@@ -82,9 +84,12 @@ test("a partial undo write retains recovery state and can be retried", async () 
   const context = { globalStorageUri: uri("/storage"), workspaceState: { get: (key: string) => state.get(key), update: async (key: string, value: unknown) => { state.set(key, value); } } };
   assert.equal(await recovery.restoreLastConversion(context, () => undefined), false);
   assert.equal(disk, "partial");
+  assert.equal(recorded.length, 0);
   assert.equal(removed, false);
   assert.equal(await recovery.restoreLastConversion(context, () => undefined), true);
   assert.equal(disk, "original");
+  assert.equal(recorded[0]?.[1], "restore");
+  assert.equal(recorded[0]?.[2], "unknown");
   assert.equal(removed, true);
   assert.equal(state.get("protected"), undefined);
   assert.ok(prompts.some((message) => message.includes("現在の内容を置き換えて")));
@@ -114,7 +119,9 @@ test("reopening a comparison side preserves both URIs and labels their encodings
   const input = new Diff(original, modified);
   const documents = [{ uri: original, encoding: "shiftjis", isDirty: false }, { uri: modified, encoding: "utf8", isDirty: false }];
   const calls: unknown[][] = [];
+  const recorded: unknown[][] = [];
   const editor = loadModule<{ reopenWithExpectedEncoding(document: unknown, match: unknown): Promise<void>; updateStatus(status: unknown, document: unknown): void; diagnosticFor(document: unknown): unknown }>("editorEncoding.ts", {
+    "./encodingOperations.js": { recordEncodingOperation: (...args: unknown[]) => recorded.push(args) },
     "node:path": path, "./scanCore.js": {}, "./fileLimits.js": {}, "./stableResourceRead.js": {}, "./workspaceRules.js": {},
     "./rules.js": { encodingInfo: (id: string) => ({ label: id }) },
     vscode: { TabInputTextDiff: Diff, workspace: { textDocuments: documents, openTextDocument: async (selected: unknown, options: { encoding: string }) => {
@@ -122,6 +129,7 @@ test("reopening a comparison side preserves both URIs and labels their encodings
     } }, window: { tabGroups: { activeTabGroup: { activeTab: { input } } }, showTextDocument: () => { throw new Error("must keep comparison"); }, showErrorMessage: (error: string) => { throw new Error(error); } }, commands: { executeCommand: async (...args: unknown[]) => { calls.push(args); } } },
   });
   await editor.reopenWithExpectedEncoding(documents[1], { rule: { encoding: "utf8bom" } });
+  assert.deepEqual(recorded[0]?.slice(1), ["reopen", "utf8", "utf8bom"]);
   assert.equal(calls[0]?.[0], "vscode.diff");
   assert.equal(calls[0]?.[1], original);
   assert.equal(calls[0]?.[2], modified);
@@ -130,4 +138,52 @@ test("reopening a comparison side preserves both URIs and labels their encodings
   editor.updateStatus(status, documents[1]);
   assert.match(status.text, /左 Git版: shiftjis \/ 右 作業中: utf8bom/);
   assert.equal(editor.diagnosticFor(documents[0]), undefined);
+});
+
+test("operation log preserves separate conversions and display changes with bounded persistence", async () => {
+  const state = new Map<string, unknown>();
+  const module = loadModule<{ EncodingOperationLog: new (state: unknown) => { append(entry: unknown): void; forFile(uri: unknown): readonly { kind: string }[] } }>("encodingOperations.ts", {
+    vscode: { EventEmitter: class { event = () => {}; fire() {} }, window: { showWarningMessage() {} } },
+  });
+  const storage = { get: (key: string) => state.get(key), update: async (key: string, value: unknown) => { state.set(key, value); } };
+  const log = new module.EncodingOperationLog(storage);
+  const uri = { toString: () => "file:///a.txt" };
+  log.append({ uri: uri.toString(), kind: "convert", from: "shiftjis", to: "utf8", at: 1 });
+  log.append({ uri: uri.toString(), kind: "reopen", from: "utf8", to: "shiftjis", at: 2 });
+  await new Promise(resolve => setTimeout(resolve, 0));
+  const reloaded = new module.EncodingOperationLog(storage);
+  assert.deepEqual(Array.from(reloaded.forFile(uri), item => item.kind), ["convert", "reopen"]);
+  for (let at = 3; at < 1005; at++) log.append({ uri: uri.toString(), kind: "reopen", from: "utf8", to: "shiftjis", at });
+  assert.equal(log.forFile(uri).length, 1000);
+});
+
+test("inventory messages only address displayed files and block duplicate conversion", async () => {
+  let receive: (message: unknown) => void = () => {};
+  let finish: (() => void) | undefined;
+  const calls: unknown[][] = [];
+  const webview = { html: "", onDidReceiveMessage: (listener: typeof receive) => { receive = listener; } };
+  const uri = { fsPath: "/work/a.txt", toString: () => "file:///work/a.txt" };
+  const module = loadModule<{ EncodingInventory: new (log: unknown) => { show(): void; update(snapshot: unknown): void } }>("encodingInventory.ts", {
+    "node:crypto": { randomBytes: () => ({ toString: () => "testnonce" }) },
+    "./encodingView.js": { summaryLabel: (value: string) => value, lineEndingLabel: (value: string) => value },
+    "./rules.js": { encodingInfo: (id: string) => ({ label: id }) },
+    vscode: { ViewColumn: { Active: 1 }, workspace: { textDocuments: [] }, window: {
+      createWebviewPanel: () => ({ webview, onDidDispose() {}, reveal() {} }), showErrorMessage() {},
+    }, commands: { executeCommand: (...args: unknown[]) => { calls.push(args); return new Promise<void>(resolve => { finish = resolve; }); } } },
+  });
+  const inventory = new module.EncodingInventory({ forFile: () => [] });
+  inventory.show(); inventory.update({ files: [{ uri, displayPath: "a.txt", encoding: "utf8", lineEnding: "lf" }] });
+  const revision = Number(/revision:(\d+)/.exec(webview.html)![1]);
+  receive({ action: "convert", index: 0, revision: revision - 1 });
+  assert.equal(calls.length, 0);
+  receive({ action: "convert", index: 0, revision });
+  receive({ action: "convert", index: 0, revision });
+  assert.equal(calls.length, 1);
+  assert.equal(calls[0]?.[0], "folderEncodingGuard.convertFile");
+  assert.equal(calls[0]?.[1], uri);
+  finish?.();
+  await new Promise(resolve => setTimeout(resolve, 0));
+  const nextRevision = Number(/revision:(\d+)/.exec(webview.html)![1]);
+  receive({ action: "convert", index: 1000, uri: "file:///outside.txt", revision: nextRevision });
+  assert.equal(calls.length, 1);
 });
