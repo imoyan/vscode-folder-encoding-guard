@@ -155,12 +155,12 @@
       },
       {
         "command": "folderEncodingGuard.inspectFolderInventory",
-        "title": "文字コード・改行チェック: このフォルダー配下の文字コードを調べて一覧表示",
+        "title": "文字コード・改行チェック: フォルダーの文字コードを調べる",
         "icon": "$(list-flat)"
       },
       {
         "command": "folderEncodingGuard.showInventory",
-        "title": "文字コード・改行チェック: 文字コード一覧と操作前後を表示"
+        "title": "文字コード・改行チェック: 調べた結果を見る"
       }
     ],
     "configuration": {

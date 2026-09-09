@@ -71,14 +71,14 @@ export class EncodingInventory implements vscode.Disposable {
     this.panel.webview.html = `<!doctype html><html lang="ja"><head><meta charset="UTF-8"><meta http-equiv="Content-Security-Policy" content="default-src 'none'; style-src 'nonce-${nonce}'; script-src 'nonce-${nonce}'"><style nonce="${nonce}">
 body{font-family:var(--vscode-font-family);color:var(--vscode-foreground);background:var(--vscode-editor-background);padding:20px}h1{font-size:20px}button{color:var(--vscode-button-foreground);background:var(--vscode-button-background);border:0;padding:6px 10px;cursor:pointer;margin:3px}button:disabled{opacity:.5;cursor:default}table{border-collapse:collapse;width:100%;margin-top:16px}th,td{text-align:left;border-bottom:1px solid var(--vscode-panel-border);padding:10px;vertical-align:top;overflow-wrap:anywhere}th{white-space:nowrap}p{line-height:1.6}.notice{color:var(--vscode-editorWarning-foreground)}summary{cursor:pointer}ul{padding-left:20px}li{margin-bottom:8px}
 </style></head><body><h1>フォルダーの文字コード一覧</h1><p>${esc(this.snapshot?.scopeLabel ?? "フォルダーを選んで調べてください")}</p>
-${button("choose", "フォルダーを選ぶ")}${button("refresh", "同じ範囲を調べ直す", !this.snapshot)}${this.folder ? button("convertFolder", "このフォルダーを変換して保存") : ""}
+${button("choose", "フォルダーを選んで調べる")}${button("refresh", "同じ範囲を調べ直す", !this.snapshot)}${this.folder ? button("convertFolder", "このフォルダーを変換して保存") : ""}
 ${this.folder ? "<p>フォルダーの変換は表示中の100件に限定せず、配下から候補を確認して選びます。ファイルを開く必要はありません。</p>" : ""}
 ${navigation}
 <p>保存済みファイルを調べた結果と、エディターの読み込み設定を分けて表示します。ASCII互換・判定不明などは文字コードを一意に特定できません。</p>
 ${this.conversionActive ? '<p>変換・復元の完了後に一覧を更新します。</p>' : ""}
 ${this.stale ? '<p class="notice">ファイルや設定が変わりました。前回の結果を残しています。「同じ範囲を調べ直す」で現在の状態を確認してください。</p>' : ""}
 <p>${files.length ? this.offset + 1 : 0}–${Math.min(files.length, this.offset + 100)} / 確認済み ${files.length} 件${this.snapshot?.hasMore ? " · 続きあり（全体の件数は未確定）" : ""}</p>
-<table><thead><tr><th>ファイル</th><th>保存済みの文字コード<br>（内容からの判定）</th><th>改行</th><th>エディターの読み込み</th><th>この拡張での操作</th><th>操作</th></tr></thead><tbody>${rows || '<tr><td colspan="6">まだ確認したファイルがありません。</td></tr>'}</tbody></table>
+<table><thead><tr><th>ファイル</th><th>保存済みの文字コード<br>（内容からの判定）</th><th>改行</th><th>エディターの読み込み</th><th>この拡張での操作</th><th>操作</th></tr></thead><tbody>${rows || '<tr><td colspan="6">まだ確認したファイルがありません。「フォルダーを選んで調べる」から開始できます。</td></tr>'}</tbody></table>
 ${navigation}
 ${skipped ? `<details><summary>読み取れなかった項目</summary><ul>${skipped}</ul></details>` : ""}
 <p>操作記録はこのワークスペースに直近1,000件まで保存します。ファイル本文は記録しません。拡張の外で行った変換や表示変更は記録対象外です。</p>
