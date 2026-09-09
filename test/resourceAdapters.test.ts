@@ -187,3 +187,48 @@ test("inventory messages only address displayed files and block duplicate conver
   receive({ action: "convert", index: 1000, uri: "file:///outside.txt", revision: nextRevision });
   assert.equal(calls.length, 1);
 });
+
+test("inventory defers per-file and editor refreshes throughout a large conversion", () => {
+  let html = "";
+  let renders = 0;
+  let lookups = 0;
+  let converted = false;
+  const webview = {
+    get html() { return html; },
+    set html(value: string) { html = value; renders++; },
+    onDidReceiveMessage() {},
+  };
+  const uri = { fsPath: "/work/a.txt", toString: () => "file:///work/a.txt" };
+  const module = loadModule<{ EncodingInventory: new (log: unknown) => {
+    show(): void; update(snapshot: unknown): void; invalidate(changed: boolean): void;
+    refresh(): void; setConversionActive(active: boolean): void;
+  } }>("encodingInventory.ts", {
+    "node:crypto": { randomBytes: () => ({ toString: () => "testnonce" }) },
+    "./encodingView.js": { summaryLabel: (value: string) => value, lineEndingLabel: (value: string) => value },
+    "./rules.js": { encodingInfo: (id: string) => ({ label: id }) },
+    vscode: { ViewColumn: { Active: 1 }, workspace: { textDocuments: [] }, window: {
+      createWebviewPanel: () => ({ webview, onDidDispose() {}, reveal() {} }),
+    } },
+  });
+  const inventory = new module.EncodingInventory({ forFile: () => {
+    lookups++;
+    return converted ? [{ kind: "convert", from: "shiftjis", to: "utf8", at: 0 }] : [];
+  } });
+  inventory.show();
+  inventory.update({ files: Array.from({ length: 100 }, () => ({ uri, displayPath: "a.txt", encoding: "shiftjis", lineEnding: "lf" })) });
+  inventory.setConversionActive(true);
+  const before = { renders, lookups };
+  for (let index = 0; index < 5000; index++) {
+    converted = true;
+    inventory.invalidate(true);
+    inventory.refresh();
+  }
+  assert.equal(renders, before.renders);
+  assert.equal(lookups, before.lookups);
+  inventory.setConversionActive(false);
+  assert.equal(renders, before.renders + 1);
+  assert.equal(lookups, before.lookups + 100);
+  assert.match(html, /未再確認/);
+  assert.match(html, /shiftjis → utf8/);
+  assert.doesNotMatch(html, /完了後に一覧を更新/);
+});

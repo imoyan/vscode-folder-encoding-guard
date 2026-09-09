@@ -55,6 +55,7 @@ export function activate(context: vscode.ExtensionContext): void {
     (uri) => resolveRule(uri)?.rule.encoding,
     (scope) => configurationFor(scope),
     () => invalidateScan(true),
+    (active) => inventory.setConversionActive(active),
   );
   const scanner = new WorkspaceEncodingScanner(
     context.workspaceState,

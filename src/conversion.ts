@@ -54,6 +54,7 @@ export class ConversionManager {
       scope: vscode.ConfigurationScope,
     ) => vscode.WorkspaceConfiguration,
     private readonly onFilesChanged: () => void = () => undefined,
+    private readonly onOperationStateChanged: (active: boolean) => void = () => undefined,
   ) {}
 
   public async notifyProtectedConversion(): Promise<void> {
@@ -427,9 +428,11 @@ export class ConversionManager {
       return undefined;
     }
     try {
+      this.onOperationStateChanged(true);
       return await operation();
     } finally {
       release();
+      this.onOperationStateChanged(false);
     }
   }
 }

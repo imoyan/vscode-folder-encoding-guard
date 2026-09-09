@@ -15,6 +15,7 @@ export class EncodingInventory implements vscode.Disposable {
   private snapshot?: EncodingScanSnapshot;
   private stale = false;
   private busy = false;
+  private conversionActive = false;
   private offset = 0;
   private revision = 0;
   private visible: readonly ScannedFile[] = [];
@@ -27,7 +28,11 @@ export class EncodingInventory implements vscode.Disposable {
       panel.onDidDispose(() => { if (this.panel === panel) this.panel = undefined; });
       panel.webview.onDidReceiveMessage((message: unknown) => { void this.handle(message); });
     } else this.panel.reveal();
-    this.refresh();
+    this.render();
+  }
+  public setConversionActive(active: boolean): void {
+    this.conversionActive = active;
+    this.render();
   }
   public update(snapshot: EncodingScanSnapshot): void {
     const previousCount = this.snapshot?.files?.length ?? 0;
@@ -40,6 +45,9 @@ export class EncodingInventory implements vscode.Disposable {
     this.refresh();
   }
   public refresh(): void {
+    if (!this.conversionActive) this.render();
+  }
+  private render(): void {
     if (!this.panel) return;
     const nonce = randomBytes(16).toString("hex");
     const revision = ++this.revision;
@@ -47,7 +55,7 @@ export class EncodingInventory implements vscode.Disposable {
     const files = this.snapshot?.files ?? [];
     this.offset = Math.min(this.offset, Math.max(0, Math.floor((files.length - 1) / 100) * 100));
     this.visible = files.slice(this.offset, this.offset + 100);
-    const button = (action: string, text: string, disabled = false, index?: number) => `<button data-action="${action}"${index === undefined ? "" : ` data-index="${index}"`}${this.busy || disabled ? " disabled" : ""}>${text}</button>`;
+    const button = (action: string, text: string, disabled = false, index?: number) => `<button data-action="${action}"${index === undefined ? "" : ` data-index="${index}"`}${this.busy || this.conversionActive || disabled ? " disabled" : ""}>${text}</button>`;
     const rows = this.visible.map((file, index) => {
       const document = vscode.workspace.textDocuments.find(entry => entry.uri.toString() === file.uri.toString());
       const operations = this.operations.forFile(file.uri);
@@ -62,6 +70,7 @@ body{font-family:var(--vscode-font-family);color:var(--vscode-foreground);backgr
 </style></head><body><h1>フォルダーの文字コード一覧</h1><p>${esc(this.snapshot?.scopeLabel ?? "フォルダーを選んで調べてください")}</p>
 ${button("choose", "フォルダーを選ぶ")}${button("refresh", "同じ範囲を調べ直す", !this.snapshot)}${button("continue", "続きを調べる（最大100件）", !this.snapshot?.hasMore || this.stale)}
 <p>保存済みファイルを調べた結果と、エディターの読み込み設定を分けて表示します。ASCII互換・判定不明などは文字コードを一意に特定できません。</p>
+${this.conversionActive ? '<p>変換・復元の完了後に一覧を更新します。</p>' : ""}
 ${this.stale ? '<p class="notice">ファイルや設定が変わりました。前回の結果を残しています。「同じ範囲を調べ直す」で現在の状態を確認してください。</p>' : ""}
 <p>${files.length ? this.offset + 1 : 0}–${Math.min(files.length, this.offset + 100)} / 確認済み ${files.length} 件${this.snapshot?.hasMore ? " · 続きあり（全体の件数は未確定）" : ""}</p>
 <table><thead><tr><th>ファイル</th><th>保存済みの文字コード<br>（内容からの判定）</th><th>改行</th><th>エディターの読み込み</th><th>この拡張での操作</th><th>操作</th></tr></thead><tbody>${rows || '<tr><td colspan="6">まだ確認したファイルがありません。</td></tr>'}</tbody></table>
@@ -71,7 +80,7 @@ ${skipped ? `<details><summary>読み取れなかった項目</summary><ul>${ski
 <script nonce="${nonce}">const api=acquireVsCodeApi();document.addEventListener('click',event=>{const button=event.target.closest('button[data-action]');if(!button||button.disabled)return;document.querySelectorAll('button').forEach(item=>item.disabled=true);api.postMessage({action:button.dataset.action,index:Number(button.dataset.index),revision:${revision}});});</script></body></html>`;
   }
   private async handle(message: unknown): Promise<void> {
-    if (!message || typeof message !== "object" || this.busy) return;
+    if (!message || typeof message !== "object" || this.busy || this.conversionActive) return;
     const { action, index, revision } = message as { action?: unknown; index?: unknown; revision?: unknown };
     if (revision !== this.revision || typeof action !== "string") return;
     const file = typeof index === "number" && Number.isInteger(index) ? this.visible[index] : undefined;
