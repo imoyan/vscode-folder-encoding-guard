@@ -163,6 +163,9 @@ async function harness(t: TestContext, input: Record<string, string | Uint8Array
     config, configFailures, state, unreadableDirectories, messages, window, workspace, runtime, picks, confirmations, information, shownPicks, searchPatterns, searchLimits,
     changes: () => ({ tree: treeChanges, decorations: decorationChanges }),
     command: (name: string, ...args: unknown[]) => commands.get(`folderEncodingGuard.${name}`)!(...args),
+    fileSelection: (name: string, rule?: string) => runtime.selectConversion(context, () => rule,
+      () => workspace.getConfiguration() as unknown as import("vscode").WorkspaceConfiguration,
+      Uri.file(path.join(root, name)) as import("vscode").Uri, undefined, "file"),
     selection: () => runtime.selectConversion(context, () => undefined,
       () => workspace.getConfiguration() as unknown as import("vscode").WorkspaceConfiguration,
       folder.uri as import("vscode").Uri),
@@ -852,4 +855,48 @@ test("unreadable subtrees stay unconfirmed, preserve baselines and allow other f
   assert.ok(!h.rows().some(row => String(row.description).includes("配下は未確認")));
   await h.scan();
   assert.equal(h.rows().filter(row => row.contextValue === "scannedFile").length, 2);
+});
+
+test("single file conversion skips folder enumeration, preserves EOL and confirms rule mismatch", async t => {
+  const h = await harness(t, { "a.txt": "日本語\r\n内部\n", "b.txt": "other" });
+  h.config.set("conversionExclude", "**/*");
+  h.picks.push({ encoding: "utf8bom" }, { encoding: "utf8" });
+  h.confirmations.push("変換する");
+  const selection = await h.fileSelection("a.txt", "utf8");
+  assert.equal(selection?.selected.length, 1);
+  assert.equal(selection?.selected[0]?.uri.toString(), h.uri("a.txt").toString());
+  assert.equal(selection?.targetEncoding, "utf8bom");
+  assert.equal(selection?.targetLineEnding, undefined);
+  assert.deepEqual(h.searchPatterns, []);
+  assert.equal(h.shownPicks.length, 2);
+  assert.ok(h.messages.some(message => message.includes("内容のプレビュー") && message.includes("ルールは変更しません")));
+  assert.equal(await readFile(h.uri("a.txt").fsPath, "utf8"), "日本語\r\n内部\n");
+});
+
+test("single file conversion refuses dirty documents and supports cancelling confirmation", async t => {
+  const h = await harness(t, { "a.txt": "日本語\n" });
+  h.workspace.textDocuments.push({ uri: h.uri("a.txt"), isDirty: true });
+  assert.equal(await h.fileSelection("a.txt"), undefined);
+  assert.equal(h.shownPicks.length, 0);
+  assert.ok(h.messages.some(message => message.includes("先にファイルを保存")));
+  h.workspace.textDocuments.length = 0;
+  h.picks.push({ encoding: "utf8bom" }, { encoding: "utf8" });
+  assert.equal(await h.fileSelection("a.txt"), undefined);
+  assert.equal(await readFile(h.uri("a.txt").fsPath, "utf8"), "日本語\n");
+});
+
+test("single file conversion explains unrepresentable content without saving", async t => {
+  const h = await harness(t, { "a.txt": "日本語\n" });
+  h.picks.push({ encoding: "windows1252" }, { encoding: "utf8" });
+  assert.equal(await h.fileSelection("a.txt"), undefined);
+  assert.ok(h.messages.some(message => message.includes("変換先で表現できない文字")));
+  assert.equal(await readFile(h.uri("a.txt").fsPath, "utf8"), "日本語\n");
+});
+
+test("single file conversion reports no change when source and target match", async t => {
+  const h = await harness(t, { "a.txt": "日本語\n" });
+  h.picks.push({ encoding: "utf8" }, { encoding: "utf8" });
+  assert.equal(await h.fileSelection("a.txt"), undefined);
+  assert.ok(h.shownPicks[1]?.items.some(item => item.encoding === "utf8"));
+  assert.ok(h.messages.some(message => message.includes("変換不要")));
 });

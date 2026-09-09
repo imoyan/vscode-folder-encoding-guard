@@ -175,6 +175,16 @@ export async function run(): Promise<void> {
   confirmations.push("元に戻す");
   assert.equal(await command("undoLastConversion"), true, JSON.stringify({ errors, notices }));
   assert.deepEqual(Buffer.from(await vscode.workspace.fs.readFile(target)), Buffer.from(original));
+  const sibling = vscode.Uri.joinPath(conversionFolder, "sibling.txt");
+  await writeObserved(sibling, original);
+  picks.push({ title: "変換先の文字コード", label: "UTF-8" }, { title: "現在の文字コード", label: "Windows-1252" });
+  confirmations.push("変換する");
+  assert.equal(await command("convertFile", target), true);
+  assert.deepEqual(Buffer.from(await vscode.workspace.fs.readFile(target)), Buffer.from("café\r\n"));
+  assert.deepEqual(Buffer.from(await vscode.workspace.fs.readFile(sibling)), Buffer.from(original));
+  confirmations.push("元に戻す");
+  assert.equal(await command("undoLastConversion"), true);
+  assert.deepEqual(Buffer.from(await vscode.workspace.fs.readFile(target)), Buffer.from(original));
   // Backup reads accept native profile storage, but keep bounds/provider guards.
   assert.ok(await readBackupResource(target, original.length));
   assert.ok(await readBackupResource(target.with({ scheme: "vscode-userdata" }), original.length));

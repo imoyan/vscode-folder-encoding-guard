@@ -103,8 +103,16 @@ export class ConversionManager {
     suppliedUri?: vscode.Uri,
     suppliedTargetEncoding?: string,
   ): Promise<boolean> {
+    return this.convert(suppliedUri, suppliedTargetEncoding, "folder");
+  }
+
+  public async convertFile(uri?: vscode.Uri): Promise<boolean> {
+    return this.convert(uri, undefined, "file");
+  }
+
+  private async convert(suppliedUri: vscode.Uri | undefined, suppliedTargetEncoding: string | undefined, scope: "folder" | "file"): Promise<boolean> {
     const completion = await this.runExclusive(
-      () => this.convertFolderExclusive(suppliedUri, suppliedTargetEncoding),
+      () => this.convertExclusive(suppliedUri, suppliedTargetEncoding, scope),
     );
     if (!completion) {
       return false;
@@ -132,9 +140,10 @@ export class ConversionManager {
     return completion.converted;
   }
 
-  private async convertFolderExclusive(
-    suppliedUri?: vscode.Uri,
-    suppliedTargetEncoding?: string,
+  private async convertExclusive(
+    suppliedUri: vscode.Uri | undefined,
+    suppliedTargetEncoding: string | undefined,
+    scope: "folder" | "file",
   ): Promise<ConversionCompletion | undefined> {
     const selection = await selectConversion(
       this.context,
@@ -142,6 +151,7 @@ export class ConversionManager {
       (scope) => this.configurationFor(scope),
       suppliedUri,
       suppliedTargetEncoding,
+      scope,
     );
     if (!selection) return undefined;
     const { selected, sourceEncoding, targetEncoding, targetLineEnding } = selection;
@@ -161,7 +171,7 @@ export class ConversionManager {
     this.onFilesChanged();
     return {
       message:
-        `${counts.converted} 件を ${encodingInfo(targetEncoding).label} へ変換しました。` +
+        `${counts.converted} 件を ${encodingInfo(targetEncoding).label} へ変換して保存しました。` +
         skippedSummary(counts),
       backupSession: conversion.backupSession,
       converted: counts.converted > 0,

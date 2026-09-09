@@ -319,6 +319,7 @@ export function activate(context: vscode.ExtensionContext): void {
     }),
     vscode.commands.registerCommand("folderEncodingGuard.showFilesPage", (direction: number) => rulesProvider.showFilesPage(direction)),
     vscode.commands.registerCommand("folderEncodingGuard.inspectActiveFile", inspectActiveFile),
+    vscode.commands.registerCommand("folderEncodingGuard.convertFile", (uri?: vscode.Uri) => conversionManager.convertFile(uri)),
     vscode.commands.registerCommand(
       "folderEncodingGuard.convertFolder",
       async (uri?: vscode.Uri) => conversionManager.convertFolder(uri),
