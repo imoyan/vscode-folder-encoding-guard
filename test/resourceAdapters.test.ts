@@ -232,3 +232,57 @@ test("inventory defers per-file and editor refreshes throughout a large conversi
   assert.match(html, /shiftjis → utf8/);
   assert.doesNotMatch(html, /完了後に一覧を更新/);
 });
+
+test("conversion refresh only reloads an already-open clean document", async () => {
+  const uri = { toString: () => "file:///work/a.txt" };
+  const documents: Array<{ uri: typeof uri; isDirty: boolean }> = [];
+  const calls: unknown[][] = [];
+  const resources = loadModule<{ reopenCleanDocument(uri: unknown, encoding: string): Promise<void> }>("conversionResources.ts", {
+    "node:crypto": {}, "./conversionCore.js": {},
+    vscode: { workspace: { textDocuments: documents, openTextDocument: async (...args: unknown[]) => { calls.push(args); } } },
+  });
+  await resources.reopenCleanDocument(uri, "utf8");
+  assert.equal(calls.length, 0);
+  documents.push({ uri, isDirty: true });
+  await resources.reopenCleanDocument(uri, "utf8");
+  assert.equal(calls.length, 0);
+  documents[0]!.isDirty = false;
+  await resources.reopenCleanDocument(uri, "utf8");
+  assert.equal(calls.length, 1);
+  assert.equal(calls[0]![0], uri);
+});
+
+test("inventory offers both navigation bars and converts only its trusted folder", async () => {
+  let receive: (message: unknown) => void = () => {};
+  const calls: unknown[][] = [];
+  let finish: (() => void) | undefined;
+  const webview = { html: "", onDidReceiveMessage: (listener: typeof receive) => { receive = listener; } };
+  const folder = { fsPath: "/work/selected", toString: () => "file:///work/selected" };
+  const module = loadModule<{ EncodingInventory: new (log: unknown) => {
+    show(): void; update(snapshot: unknown, folder?: unknown): void; invalidate(changed: boolean): void;
+  } }>("encodingInventory.ts", {
+    "node:crypto": { randomBytes: () => ({ toString: () => "testnonce" }) },
+    "./encodingView.js": { summaryLabel: (value: string) => value, lineEndingLabel: (value: string) => value },
+    "./rules.js": { encodingInfo: (id: string) => ({ label: id }) },
+    vscode: { ViewColumn: { Active: 1 }, workspace: { textDocuments: [] }, window: {
+      createWebviewPanel: () => ({ webview, onDidDispose() {}, reveal() {} }), showErrorMessage() {},
+    }, commands: { executeCommand: (...args: unknown[]) => { calls.push(args); return new Promise<void>(resolve => { finish = resolve; }); } } },
+  });
+  const inventory = new module.EncodingInventory({ forFile: () => [] });
+  inventory.show(); inventory.update({ files: [], hasMore: true }, folder);
+  assert.equal((webview.html.match(/data-action="continue"/g) ?? []).length, 2);
+  assert.equal((webview.html.match(/data-action="next"/g) ?? []).length, 2);
+  const revision = Number(/revision:(\d+)/.exec(webview.html)![1]);
+  receive({ action: "convertFolder", revision, uri: "file:///untrusted" });
+  receive({ action: "convertFolder", revision });
+  assert.equal(calls.length, 1);
+  assert.equal(calls[0]![0], "folderEncodingGuard.convertFolder");
+  assert.equal(calls[0]![1], folder);
+  finish?.(); await new Promise(resolve => setTimeout(resolve, 0));
+  inventory.invalidate(true);
+  assert.match(webview.html, /data-action="continue" disabled/);
+  inventory.invalidate(false);
+  assert.doesNotMatch(webview.html, /data-action="convertFolder"/);
+  receive({ action: "convertFolder", revision: Number(/revision:(\d+)/.exec(webview.html)![1]), uri: folder });
+  assert.equal(calls.length, 1);
+});
