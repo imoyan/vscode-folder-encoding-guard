@@ -925,3 +925,18 @@ test("inventory escapes filenames instead of allowing HTML or script injection",
   assert.ok(!h.inventoryWebview.html.includes('<img src=x'));
   assert.ok(h.inventoryWebview.html.includes("default-src 'none'"));
 });
+
+
+test("workspace inventory identifies its rule-filtered scope", async t => {
+  const h = await harness(t, { "a.txt": "日本語\n", "b.csv": "data\n" });
+  h.config.set("rules", [{ pattern: "**/*.txt", encoding: "utf8" }]);
+  await h.scan();
+  await h.command("showInventory");
+  assert.ok(h.inventoryWebview.html.includes("a.txt"));
+  assert.ok(!h.inventoryWebview.html.includes("b.csv"));
+  assert.ok(h.inventoryWebview.html.includes("ワークスペース全体（ルール設定のあるフォルダーはルール対象のみ）"));
+  assert.ok(!h.inventoryWebview.html.includes("フォルダーを選んで調べてください"));
+  await h.command("inspectFolderInventory", h.uri(""));
+  assert.ok(h.inventoryWebview.html.includes("b.csv"));
+  assert.ok(!h.inventoryWebview.html.includes("ルール対象のみ"));
+});
