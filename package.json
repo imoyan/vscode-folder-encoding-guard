@@ -2,7 +2,7 @@
   "name": "folder-encoding-guard",
   "displayName": "文字コード・改行チェック",
   "description": "ファイル／フォルダーごとの期待する文字コードを設定し、文字コード・改行の不一致や変更を確認。選択したファイルをまとめて変換できます。",
-  "version": "0.12.0",
+  "version": "0.12.1",
   "publisher": "encoding-tools",
   "license": "MIT",
   "repository": {
@@ -142,7 +142,7 @@
       },
       {
         "command": "folderEncodingGuard.continueScan",
-        "title": "文字コード・改行チェック: 続きを解析（最大100件）",
+        "title": "文字コード・改行チェック: 続きを解析（最大500件）",
         "icon": "$(debug-continue)"
       },
       {
@@ -258,7 +258,7 @@
           "default": 5000,
           "minimum": 1,
           "maximum": 50000,
-          "description": "1回の解析で調べる検索候補数の上限です。操作ごとに最大100件まで解析し、残りは「続きを解析」で進めます。"
+          "description": "1回の解析で調べる検索候補数の上限です。操作ごとに最大500件まで解析し、残りは「続きを解析」で進めます。"
         },
         "folderEncodingGuard.maxFileSizeKB": {
           "type": "integer",

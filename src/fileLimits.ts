@@ -1,3 +1,5 @@
+export const SCAN_PAGE_SIZE = 500;
+
 export const DEFAULT_SCAN_EXCLUDE = "**/{.git,.hg,.svn,.vscode,.idea,node_modules,.next,dist,build,.dart_tool}/**";
 
 export const MAX_IN_MEMORY_FILE_BYTES = 32 * 1024 * 1024;
