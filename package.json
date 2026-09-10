@@ -2,7 +2,7 @@
   "name": "folder-encoding-guard",
   "displayName": "文字コード・改行チェック",
   "description": "ファイル／フォルダーごとの期待する文字コードを設定し、文字コード・改行の不一致や変更を確認。選択したファイルをまとめて変換できます。",
-  "version": "0.12.0",
+  "version": "0.12.1",
   "publisher": "encoding-tools",
   "license": "MIT",
   "repository": {

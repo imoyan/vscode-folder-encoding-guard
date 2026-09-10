@@ -694,23 +694,29 @@ test("scoped refresh removes deleted baselines while keeping unselected files", 
 });
 
 
-test("large folders expose the first 100 files without scanning or listing everything", async (t) => {
+test("large folders expose the first 500 files without scanning or listing everything", async (t) => {
   const input = Object.fromEntries(Array.from({ length: 5101 }, (_, i) => [`file-${String(i).padStart(4, "0")}.txt`, "hello\n"]));
   const h = await harness(t, input);
   await h.command("scanSelection", h.uri(""));
   assert.deepEqual(h.searchLimits, []);
   let rows = h.rows().filter((row) => row.contextValue === "scannedFile");
-  assert.equal(rows.length, 100);
+  assert.equal(rows.length, 500);
   assert.match(String(rows[0]?.description), /ASCII互換 \/ LF · 注意なし/);
   assert.equal(rows[0]?.command?.command, "vscode.open");
   const firstLabels = rows.map((row) => row.label);
-  assert.ok(h.rows().some((row) => row.label === "続きを解析（最大100件）"));
+  await h.command("showInventory");
+  assert.equal((h.inventoryWebview.html.match(/<tr><td /g) ?? []).length, 500);
+  assert.ok(h.inventoryWebview.html.includes("1–500 / 確認済み 500 件"));
+  assert.ok(h.inventoryWebview.html.includes("次の500件"));
+  assert.ok(h.rows().some((row) => row.label === "続きを解析（最大500件）"));
   await h.command("continueScan");
   assert.deepEqual(h.searchLimits, []);
   rows = h.rows().filter((row) => row.contextValue === "scannedFile");
-  assert.equal(rows.length, 100);
+  assert.equal(rows.length, 500);
   assert.ok(rows.every((row) => !firstLabels.includes(row.label)));
-  assert.match(String(h.rows().find((row) => row.label === "状況")?.description), /確認済み 200 件/);
+  assert.equal((h.inventoryWebview.html.match(/<tr><td /g) ?? []).length, 500);
+  assert.ok(h.inventoryWebview.html.includes("501–1000 / 確認済み 1000 件"));
+  assert.match(String(h.rows().find((row) => row.label === "状況")?.description), /確認済み 1000 件/);
   await h.command("showFilesPage", -1);
   assert.deepEqual(h.rows().filter((row) => row.contextValue === "scannedFile").map((row) => row.label), firstLabels);
   assert.deepEqual(h.messages.filter((message) => message.includes("件を超えました")), []);
@@ -724,7 +730,7 @@ test("continuation reaches the end without retrying skipped files or duplicating
   await h.command("continueScan");
   await h.command("continueScan");
   assert.match(String(h.rows().find((row) => row.label === "状況")?.description), /確認済み 2 件 · 未確認 1 件/);
-  assert.ok(!h.rows().some((row) => row.label === "続きを解析（最大100件）"));
+  assert.ok(!h.rows().some((row) => row.label === "続きを解析（最大500件）"));
   assert.equal(h.rows().filter((row) => row.contextValue === "mixedLineEndingFinding").length, 1);
   const before = h.searchPatterns.length;
   await h.command("continueScan");
@@ -756,7 +762,7 @@ test("filtered candidates advance the cursor and do not erase unseen baselines",
   assert.deepEqual((h.state.get("encodingBaseline.v1") as Record<string, unknown>)[key], before);
   await h.command("continueScan");
   assert.ok(h.rows().some((row) => row.contextValue === "scannedFile" && row.label === "keep.txt"));
-  assert.ok(!h.rows().some((row) => row.label === "続きを解析（最大100件）"));
+  assert.ok(!h.rows().some((row) => row.label === "続きを解析（最大500件）"));
 });
 
 
@@ -767,7 +773,7 @@ test("nested roots can be paged without exceeding limits or recounting their fil
   await h.command("scanSelection", h.uri(""));
   await h.command("continueScan");
   assert.match(String(h.rows().find((row) => row.label === "状況")?.description), /確認済み 2 件/);
-  assert.ok(!h.rows().some((row) => row.label === "続きを解析（最大100件）"));
+  assert.ok(!h.rows().some((row) => row.label === "続きを解析（最大500件）"));
 });
 
 test("findings from individually added workspace roots keep their identity", async (t) => {
@@ -850,7 +856,7 @@ test("unreadable subtrees stay unconfirmed, preserve baselines and allow other f
   assert.equal(h.rows().find(row => String(row.description).includes("配下は未確認"))?.command?.command, "revealInExplorer");
   assert.ok(h.rows().some(row => row.contextValue === "scannedFile" && row.label === "healthy/b.txt"));
   assert.ok(!h.messages.some(message => message.includes("スキャンに失敗")));
-  assert.ok(!h.rows().some(row => row.label === "続きを解析（最大100件）"));
+  assert.ok(!h.rows().some(row => row.label === "続きを解析（最大500件）"));
   for (const setting of ["encodingBaseline.v1", "lineEndingBaseline.v2"]) assert.ok((h.state.get(setting) as Record<string, unknown>)[key]);
   h.unreadableDirectories.clear();
   await h.command("addScanSelection", h.uri("locked"));

@@ -4,6 +4,7 @@ import path from "node:path";
 import { createContext, runInContext } from "node:vm";
 import { test } from "node:test";
 import ts from "typescript";
+import * as fileLimits from "../src/fileLimits.js";
 
 function loadModule<T>(name: string, dependencies: Record<string, unknown>): T {
   const source = readFileSync(path.join(process.cwd(), "src", name), "utf8");
@@ -165,6 +166,7 @@ test("inventory messages only address displayed files and block duplicate conver
   const uri = { fsPath: "/work/a.txt", toString: () => "file:///work/a.txt" };
   const module = loadModule<{ EncodingInventory: new (log: unknown) => { show(): void; update(snapshot: unknown): void } }>("encodingInventory.ts", {
     "node:crypto": { randomBytes: () => ({ toString: () => "testnonce" }) },
+    "./fileLimits.js": fileLimits,
     "./encodingView.js": { summaryLabel: (value: string) => value, lineEndingLabel: (value: string) => value },
     "./rules.js": { encodingInfo: (id: string) => ({ label: id }) },
     vscode: { ViewColumn: { Active: 1 }, workspace: { textDocuments: [] }, window: {
@@ -204,6 +206,7 @@ test("inventory defers per-file and editor refreshes throughout a large conversi
     refresh(): void; setConversionActive(active: boolean): void;
   } }>("encodingInventory.ts", {
     "node:crypto": { randomBytes: () => ({ toString: () => "testnonce" }) },
+    "./fileLimits.js": fileLimits,
     "./encodingView.js": { summaryLabel: (value: string) => value, lineEndingLabel: (value: string) => value },
     "./rules.js": { encodingInfo: (id: string) => ({ label: id }) },
     vscode: { ViewColumn: { Active: 1 }, workspace: { textDocuments: [] }, window: {

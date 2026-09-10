@@ -1,3 +1,4 @@
+import { SCAN_PAGE_SIZE } from "./fileLimits.js";
 import { DirectoryScanCursor } from "./directoryScanCursor.js";
 import { Minimatch } from "minimatch";
 import { scopeContains, type ScanScope } from "./scanScope.js";
@@ -200,9 +201,9 @@ export class WorkspaceEncodingScanner {
           const commits: Array<{ reader: DirectoryScanCursor; count: number }> = [];
           const previousCursors = new Map(previousPage?.pageCursors?.map((cursor) => [cursor.key, cursor]));
           // Bound candidate work across all roots, including candidates without matching rules.
-          let remaining = Math.min(100, ...folders.map((folder) => {
+          let remaining = Math.min(SCAN_PAGE_SIZE, ...folders.map((folder) => {
             const value = this.configurationFor(folder.uri).get<number>("maxScanFiles", 5000);
-            return Number.isFinite(value) ? Math.max(1, Math.floor(value)) : 100;
+            return Number.isFinite(value) ? Math.max(1, Math.floor(value)) : SCAN_PAGE_SIZE;
           }));
           for (const folder of folders) {
             const rules = this.patternsFor(folder);
@@ -224,7 +225,7 @@ export class WorkspaceEncodingScanner {
                 cursors.set(key, previous ?? { key, complete: false });
                 continue;
               }
-              progress.report({ message: "候補を検索中（今回は最大100件）" });
+              progress.report({ message: `候補を検索中（今回は最大${SCAN_PAGE_SIZE}件）` });
               let reader = previous?.reader;
               let page: readonly vscode.Uri[];
               let complete: boolean;
