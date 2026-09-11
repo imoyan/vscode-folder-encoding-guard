@@ -25,6 +25,25 @@ test("resource rules preserve remote URI identity", () => {
   assert.equal(rules.fileUriForResource(remote), remote);
 });
 
+test("conversion refresh only reloads an already-open clean document", async () => {
+  const uri = { toString: () => "file:///work/a.txt" };
+  const documents: Array<{ uri: typeof uri; isDirty: boolean }> = [];
+  const calls: unknown[][] = [];
+  const resources = loadModule<{ reopenCleanDocument(uri: unknown, encoding: string): Promise<void> }>("conversionResources.ts", {
+    "node:crypto": {}, "./conversionCore.js": {},
+    vscode: { workspace: { textDocuments: documents, openTextDocument: async (...args: unknown[]) => { calls.push(args); } } },
+  });
+  await resources.reopenCleanDocument(uri, "utf8");
+  assert.equal(calls.length, 0);
+  documents.push({ uri, isDirty: true });
+  await resources.reopenCleanDocument(uri, "utf8");
+  assert.equal(calls.length, 0);
+  documents[0]!.isDirty = false;
+  await resources.reopenCleanDocument(uri, "utf8");
+  assert.equal(calls.length, 1);
+  assert.equal(calls[0]![0], uri);
+});
+
 test("Explorer badge setting gates findings and rule mismatches outrank baseline changes", () => {
   let enabled = true;
   const uri = { toString: () => "file:///workspace/a.txt" };
@@ -231,7 +250,7 @@ test("inventory defers per-file and editor refreshes throughout a large conversi
   inventory.setConversionActive(false);
   assert.equal(renders, before.renders + 1);
   assert.equal(lookups, before.lookups + 100);
-  assert.match(html, /未再確認/);
+  assert.match(html, /再確認が必要/);
   assert.match(html, /shiftjis → utf8/);
   assert.doesNotMatch(html, /完了後に一覧を更新/);
 });

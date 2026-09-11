@@ -30,7 +30,7 @@ export async function reopenCleanDocument(uri: vscode.Uri, encoding: string): Pr
   const open = vscode.workspace.textDocuments.find(
     (document) => document.uri.toString() === uri.toString(),
   );
-  if (!open || !open.isDirty) {
+  if (open && !open.isDirty) {
     try {
       await vscode.workspace.openTextDocument(uri, { encoding });
     } catch {
