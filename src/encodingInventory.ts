@@ -56,10 +56,11 @@ export class EncodingInventory implements vscode.Disposable {
     const files = this.snapshot?.files ?? [];
     this.offset = Math.min(this.offset, Math.max(0, Math.floor((files.length - 1) / SCAN_PAGE_SIZE) * SCAN_PAGE_SIZE));
     this.visible = files.slice(this.offset, this.offset + SCAN_PAGE_SIZE);
+    const operationHistory = this.operations.forFiles(this.visible.map(file => file.uri));
     const button = (action: string, text: string, disabled = false, index?: number) => `<button data-action="${action}"${index === undefined ? "" : ` data-index="${index}"`}${this.busy || this.conversionActive || disabled ? " disabled" : ""}>${text}</button>`;
     const rows = this.visible.map((file, index) => {
       const document = vscode.workspace.textDocuments.find(entry => entry.uri.toString() === file.uri.toString());
-      const operations = this.operations.forFile(file.uri);
+      const operations = operationHistory.get(file.uri.toString()) ?? [];
       const latest = operations.at(-1);
       const latestLabel = latest ? `${latest.kind === "reopen" ? "表示だけ変更" : latest.kind === "restore" ? "復元して保存" : "変換して保存"}: ${summaryLabel(latest.from)} → ${summaryLabel(latest.to)}` : "";
       const history = operations.map(entry => `<li>${esc(new Date(entry.at).toLocaleString())} · ${entry.kind === "reopen" ? "表示だけ変更（保存なし）" : entry.kind === "restore" ? "元に戻して保存" : "変換して保存"}: ${esc(summaryLabel(entry.from))} → ${esc(summaryLabel(entry.to))}${entry.lineEnding ? ` / 改行 → ${esc(entry.lineEnding.toUpperCase())}` : ""}</li>`).join("");
