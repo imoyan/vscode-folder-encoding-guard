@@ -1,6 +1,5 @@
-import { SCAN_PAGE_SIZE } from "./fileLimits.js";
+import { DEFAULT_MAX_SCAN_FILES, DEFAULT_SCAN_EXCLUDE, SCAN_PAGE_SIZE, configuredFileSizeLimit, configuredScanFileLimit } from "./fileLimits.js";
 import * as vscode from "vscode";
-import { DEFAULT_SCAN_EXCLUDE, configuredFileSizeLimit } from "./fileLimits.js";
 import { EncodingRule, encodingInfo } from "./rules.js";
 import type { EncodingScanSnapshot, GitInspectionStatus, ScanFinding } from "./scanner.js";
 import type { LineEndingKind, LineEndingStyle } from "./scanCore.js";
@@ -293,7 +292,7 @@ export class RulesProvider implements vscode.TreeDataProvider<ViewItem> {
         scope.tooltip = [folder.uri.fsPath,
           rules.length ? `対象: ${rules.map((rule) => rule.pattern).join(", ")}` : "対象: **/*",
           `除外: ${config.get("conversionExclude", DEFAULT_SCAN_EXCLUDE)}`,
-          `1回: 最大${Math.min(SCAN_PAGE_SIZE, config.get<number>("maxScanFiles", 5000))} 候補 / 1ファイル ${configuredFileSizeLimit(config.get("maxFileSizeKB", 5120)) / 1024} KiB`,
+          `1回: 最大${Math.min(SCAN_PAGE_SIZE, configuredScanFileLimit(config.get<number>("maxScanFiles", DEFAULT_MAX_SCAN_FILES)))} 候補 / 1ファイル ${configuredFileSizeLimit(config.get("maxFileSizeKB", 5120)) / 1024} KiB`,
         ].join("\n");
         return scope;
       });
