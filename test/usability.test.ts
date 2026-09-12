@@ -929,6 +929,22 @@ test("empty inventory explains that rules are optional", async t => {
   await h.command("showInventory");
   assert.ok(h.inventoryWebview.html.includes("ルール設定なしでもフォルダーを調べられます"));
   assert.ok(h.inventoryWebview.html.includes("フォルダーを選んで調べる"));
+  assert.ok(h.inventoryWebview.html.includes("まだ調べていません"));
+  await h.command("inspectFolderInventory", h.uri(""));
+  assert.ok(h.inventoryWebview.html.includes("この範囲に調査対象のファイルはありません"));
+  assert.ok(!h.inventoryWebview.html.includes("まだ調べていません"));
+});
+
+test("empty inventory reports skipped files and unfinished pages", async t => {
+  const h = await harness(t, { "a.txt": "a".repeat(2048), "b.txt": "b".repeat(2048) });
+  h.config.set("maxScanFiles", 1);
+  h.config.set("maxFileSizeKB", 1);
+  await h.command("inspectFolderInventory", h.uri(""));
+  assert.ok(h.inventoryWebview.html.includes("ここまでで確認できたファイルは0件"));
+  await h.command("continueScan");
+  assert.ok(h.inventoryWebview.html.includes("未確認の項目と理由を確認してください"));
+  h.emit("fileChange", "a.txt");
+  assert.ok(h.inventoryWebview.html.includes("前回の結果は0件"));
 });
 
 test("inventory escapes filenames instead of allowing HTML or script injection", async t => {
