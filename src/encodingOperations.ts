@@ -29,6 +29,17 @@ export class EncodingOperationLog {
     ) : [];
   }
   public forFile(uri: vscode.Uri): readonly EncodingOperation[] { return this.entries.filter(entry => entry.uri === uri.toString()); }
+  public forFiles(uris: readonly vscode.Uri[]): ReadonlyMap<string, readonly EncodingOperation[]> {
+    const keys = new Set(uris.map(uri => uri.toString()));
+    const grouped = new Map<string, EncodingOperation[]>();
+    for (const entry of this.entries) {
+      if (!keys.has(entry.uri)) continue;
+      const operations = grouped.get(entry.uri);
+      if (operations) operations.push(entry);
+      else grouped.set(entry.uri, [entry]);
+    }
+    return grouped;
+  }
   public append(entry: EncodingOperation): void {
     this.entries = [...this.entries, entry].slice(-1000);
     this.dirty = true;

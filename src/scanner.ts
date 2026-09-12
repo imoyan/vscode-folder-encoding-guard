@@ -1,4 +1,4 @@
-import { SCAN_PAGE_SIZE } from "./fileLimits.js";
+import { DEFAULT_MAX_SCAN_FILES, SCAN_PAGE_SIZE, configuredFileSizeLimit, configuredScanFileLimit, DEFAULT_SCAN_EXCLUDE } from "./fileLimits.js";
 import { DirectoryScanCursor } from "./directoryScanCursor.js";
 import { Minimatch } from "minimatch";
 import { scopeContains, type ScanScope } from "./scanScope.js";
@@ -31,7 +31,6 @@ import {
   resourceStillMatchesRead,
 } from "./stableResourceRead.js";
 import { ENCODINGS } from "./rules.js";
-import { DEFAULT_SCAN_EXCLUDE, configuredFileSizeLimit } from "./fileLimits.js";
 import { ENCODING_BASELINE_KEY, type ObservedEncodingChange, parseEncodingBaselines, planEncodingComparison } from "./encodingBaseline.js";
 import { hashBytes } from "./conversionResources.js";
 
@@ -202,8 +201,7 @@ export class WorkspaceEncodingScanner {
           const previousCursors = new Map(previousPage?.pageCursors?.map((cursor) => [cursor.key, cursor]));
           // Bound candidate work across all roots, including candidates without matching rules.
           let remaining = Math.min(SCAN_PAGE_SIZE, ...folders.map((folder) => {
-            const value = this.configurationFor(folder.uri).get<number>("maxScanFiles", 5000);
-            return Number.isFinite(value) ? Math.max(1, Math.floor(value)) : SCAN_PAGE_SIZE;
+            return configuredScanFileLimit(this.configurationFor(folder.uri).get<number>("maxScanFiles", DEFAULT_MAX_SCAN_FILES));
           }));
           for (const folder of folders) {
             const rules = this.patternsFor(folder);

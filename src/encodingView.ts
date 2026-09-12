@@ -1,6 +1,5 @@
-import { SCAN_PAGE_SIZE } from "./fileLimits.js";
+import { DEFAULT_MAX_SCAN_FILES, DEFAULT_SCAN_EXCLUDE, SCAN_PAGE_SIZE, configuredFileSizeLimit, configuredScanFileLimit } from "./fileLimits.js";
 import * as vscode from "vscode";
-import { DEFAULT_SCAN_EXCLUDE, configuredFileSizeLimit } from "./fileLimits.js";
 import { EncodingRule, encodingInfo } from "./rules.js";
 import type { EncodingScanSnapshot, GitInspectionStatus, ScanFinding } from "./scanner.js";
 import type { LineEndingKind, LineEndingStyle } from "./scanCore.js";
@@ -265,13 +264,13 @@ export class RulesProvider implements vscode.TreeDataProvider<ViewItem> {
       const allowanceCount = (vscode.workspace.workspaceFolders ?? []).reduce(
         (count, folder) => count + getAllowedMixedLineEndings(folder).length + getDisallowedMixedLineEndings(folder).length, 0,
       );
-      const inventory = new MessageItem("フォルダーを調べて一覧表示");
-      inventory.command = { command: "folderEncodingGuard.inspectFolderInventory", title: "フォルダーを調べて一覧表示" };
-      const previousInventory = new MessageItem("文字コード一覧と操作前後を開く");
-      previousInventory.command = { command: "folderEncodingGuard.showInventory", title: "一覧を開く" };
+      const inventory = new MessageItem("フォルダーを調べる");
+      inventory.command = { command: "folderEncodingGuard.inspectFolderInventory", title: "フォルダーを調べる" };
+      const previousInventory = new MessageItem("調べた結果を見る");
+      previousInventory.command = { command: "folderEncodingGuard.showInventory", title: "調べた結果を見る" };
       return [
         inventory, previousInventory,
-        new GroupItem("scope", "確認範囲", this.scopeLabel ?? "範囲を選んで解析できます"),
+        new GroupItem("scope", "確認範囲", this.scopeLabel ?? "範囲を選んで調べられます"),
         new GroupItem("summary", "状況", statusDescription),
         ...(this.snapshot ? [new GroupItem("files", "保存済みファイルの文字コード", `${this.snapshot.scannedCount ? this.filePageStart + 1 : 0}–${Math.min(this.filePageStart + SCAN_PAGE_SIZE, this.snapshot.scannedCount)} / ${this.snapshot.scannedCount} 件`)] : []),
         new GroupItem("rules", "期待する文字コード", `${ruleCount} 件 · 上の設定を優先`),
@@ -293,7 +292,7 @@ export class RulesProvider implements vscode.TreeDataProvider<ViewItem> {
         scope.tooltip = [folder.uri.fsPath,
           rules.length ? `対象: ${rules.map((rule) => rule.pattern).join(", ")}` : "対象: **/*",
           `除外: ${config.get("conversionExclude", DEFAULT_SCAN_EXCLUDE)}`,
-          `1回: 最大${Math.min(SCAN_PAGE_SIZE, config.get<number>("maxScanFiles", 5000))} 候補 / 1ファイル ${configuredFileSizeLimit(config.get("maxFileSizeKB", 5120)) / 1024} KiB`,
+          `1回: 最大${Math.min(SCAN_PAGE_SIZE, configuredScanFileLimit(config.get<number>("maxScanFiles", DEFAULT_MAX_SCAN_FILES)))} 候補 / 1ファイル ${configuredFileSizeLimit(config.get("maxFileSizeKB", 5120)) / 1024} KiB`,
         ].join("\n");
         return scope;
       });
@@ -315,7 +314,7 @@ export class RulesProvider implements vscode.TreeDataProvider<ViewItem> {
     if (!this.snapshot) {
       return [new MessageItem(this.needsRescan
         ? "ファイルが変更されました。更新ボタンで再確認してください"
-        : "「範囲を選んで解析」で1ファイルから確認できます（設定は任意）")];
+        : "「範囲を選んで調べる」で1ファイルから確認できます（設定は任意）")];
     }
     const snapshot = this.snapshot;
     if (item.kind === "files") {
@@ -339,9 +338,9 @@ export class RulesProvider implements vscode.TreeDataProvider<ViewItem> {
         rows.push(more);
       }
       if (snapshot.hasMore) {
-        const more = new MessageItem(`続きを解析（最大${SCAN_PAGE_SIZE}件）`);
+        const more = new MessageItem(`続きを調べる（最大${SCAN_PAGE_SIZE}件）`);
         more.description = "全体の件数はまだ未確定です";
-        more.command = { command: "folderEncodingGuard.continueScan", title: "続きを解析" };
+        more.command = { command: "folderEncodingGuard.continueScan", title: "続きを調べる" };
         rows.push(more);
       }
       return rows.length ? rows : [new MessageItem("確認できたファイルはありません")];

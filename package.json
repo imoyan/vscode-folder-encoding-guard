@@ -2,7 +2,7 @@
   "name": "folder-encoding-guard",
   "displayName": "文字コード・改行チェック",
   "description": "ファイル／フォルダーごとの期待する文字コードを設定し、文字コード・改行の不一致や変更を確認。選択したファイルをまとめて変換できます。",
-  "version": "0.12.1",
+  "version": "0.12.2",
   "publisher": "encoding-tools",
   "license": "MIT",
   "repository": {
@@ -127,7 +127,7 @@
       },
       {
         "command": "folderEncodingGuard.scanSelection",
-        "title": "文字コード・改行チェック: 範囲を選んで解析",
+        "title": "文字コード・改行チェック: 範囲を選んで調べる",
         "icon": "$(search)"
       },
       {
@@ -137,12 +137,12 @@
       },
       {
         "command": "folderEncodingGuard.addScanSelection",
-        "title": "文字コード・改行チェック: 範囲を追加して解析",
+        "title": "文字コード・改行チェック: 範囲を追加して調べる",
         "icon": "$(add)"
       },
       {
         "command": "folderEncodingGuard.continueScan",
-        "title": "文字コード・改行チェック: 続きを解析（最大500件）",
+        "title": "文字コード・改行チェック: 続きを調べる（最大500件）",
         "icon": "$(debug-continue)"
       },
       {
@@ -155,12 +155,12 @@
       },
       {
         "command": "folderEncodingGuard.inspectFolderInventory",
-        "title": "文字コード・改行チェック: このフォルダー配下の文字コードを調べて一覧表示",
+        "title": "文字コード・改行チェック: フォルダーを調べる",
         "icon": "$(list-flat)"
       },
       {
         "command": "folderEncodingGuard.showInventory",
-        "title": "文字コード・改行チェック: 文字コード一覧と操作前後を表示"
+        "title": "文字コード・改行チェック: 調べた結果を見る"
       }
     ],
     "configuration": {
@@ -258,7 +258,7 @@
           "default": 5000,
           "minimum": 1,
           "maximum": 50000,
-          "description": "1回の解析で調べる検索候補数の上限です。操作ごとに最大500件まで解析し、残りは「続きを解析」で進めます。"
+          "description": "1回の調査で調べる検索候補数の上限です。操作ごとに最大500件まで調べ、残りは「続きを調べる」で進めます。"
         },
         "folderEncodingGuard.maxFileSizeKB": {
           "type": "integer",

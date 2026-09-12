@@ -25,6 +25,25 @@ test("resource rules preserve remote URI identity", () => {
   assert.equal(rules.fileUriForResource(remote), remote);
 });
 
+test("conversion refresh only reloads an already-open clean document", async () => {
+  const uri = { toString: () => "file:///work/a.txt" };
+  const documents: Array<{ uri: typeof uri; isDirty: boolean }> = [];
+  const calls: unknown[][] = [];
+  const resources = loadModule<{ reopenCleanDocument(uri: unknown, encoding: string): Promise<void> }>("conversionResources.ts", {
+    "node:crypto": {}, "./conversionCore.js": {},
+    vscode: { workspace: { textDocuments: documents, openTextDocument: async (...args: unknown[]) => { calls.push(args); } } },
+  });
+  await resources.reopenCleanDocument(uri, "utf8");
+  assert.equal(calls.length, 0);
+  documents.push({ uri, isDirty: true });
+  await resources.reopenCleanDocument(uri, "utf8");
+  assert.equal(calls.length, 0);
+  documents[0]!.isDirty = false;
+  await resources.reopenCleanDocument(uri, "utf8");
+  assert.equal(calls.length, 1);
+  assert.equal(calls[0]![0], uri);
+});
+
 test("Explorer badge setting gates findings and rule mismatches outrank baseline changes", () => {
   let enabled = true;
   const uri = { toString: () => "file:///workspace/a.txt" };
@@ -143,7 +162,7 @@ test("reopening a comparison side preserves both URIs and labels their encodings
 
 test("operation log preserves separate conversions and display changes with bounded persistence", async () => {
   const state = new Map<string, unknown>();
-  const module = loadModule<{ EncodingOperationLog: new (state: unknown) => { append(entry: unknown): void; forFile(uri: unknown): readonly { kind: string }[] } }>("encodingOperations.ts", {
+  const module = loadModule<{ EncodingOperationLog: new (state: unknown) => { append(entry: unknown): void; forFile(uri: unknown): readonly { kind: string }[]; forFiles(uris: readonly unknown[]): ReadonlyMap<string, readonly { kind: string }[]> } }>("encodingOperations.ts", {
     vscode: { EventEmitter: class { event = () => {}; fire() {} }, window: { showWarningMessage() {} } },
   });
   const storage = { get: (key: string) => state.get(key), update: async (key: string, value: unknown) => { state.set(key, value); } };
@@ -154,6 +173,7 @@ test("operation log preserves separate conversions and display changes with boun
   await new Promise(resolve => setTimeout(resolve, 0));
   const reloaded = new module.EncodingOperationLog(storage);
   assert.deepEqual(Array.from(reloaded.forFile(uri), item => item.kind), ["convert", "reopen"]);
+  assert.deepEqual(Array.from(reloaded.forFiles([uri]).get(uri.toString()) ?? [], item => item.kind), ["convert", "reopen"]);
   for (let at = 3; at < 1005; at++) log.append({ uri: uri.toString(), kind: "reopen", from: "utf8", to: "shiftjis", at });
   assert.equal(log.forFile(uri).length, 1000);
 });
@@ -173,7 +193,7 @@ test("inventory messages only address displayed files and block duplicate conver
       createWebviewPanel: () => ({ webview, onDidDispose() {}, reveal() {} }), showErrorMessage() {},
     }, commands: { executeCommand: (...args: unknown[]) => { calls.push(args); return new Promise<void>(resolve => { finish = resolve; }); } } },
   });
-  const inventory = new module.EncodingInventory({ forFile: () => [] });
+  const inventory = new module.EncodingInventory({ forFiles: (uris: ReadonlyArray<typeof uri>) => new Map(uris.map(item => [item.toString(), []])) });
   inventory.show(); inventory.update({ files: [{ uri, displayPath: "a.txt", encoding: "utf8", lineEnding: "lf" }] });
   const revision = Number(/revision:(\d+)/.exec(webview.html)![1]);
   receive({ action: "convert", index: 0, revision: revision - 1 });
@@ -213,9 +233,10 @@ test("inventory defers per-file and editor refreshes throughout a large conversi
       createWebviewPanel: () => ({ webview, onDidDispose() {}, reveal() {} }),
     } },
   });
-  const inventory = new module.EncodingInventory({ forFile: () => {
+  const inventory = new module.EncodingInventory({ forFiles: (uris: ReadonlyArray<typeof uri>) => {
     lookups++;
-    return converted ? [{ kind: "convert", from: "shiftjis", to: "utf8", at: 0 }] : [];
+    const operations = converted ? [{ kind: "convert", from: "shiftjis", to: "utf8", at: 0 }] : [];
+    return new Map(uris.map(item => [item.toString(), operations]));
   } });
   inventory.show();
   inventory.update({ files: Array.from({ length: 100 }, () => ({ uri, displayPath: "a.txt", encoding: "shiftjis", lineEnding: "lf" })) });
@@ -230,8 +251,8 @@ test("inventory defers per-file and editor refreshes throughout a large conversi
   assert.equal(lookups, before.lookups);
   inventory.setConversionActive(false);
   assert.equal(renders, before.renders + 1);
-  assert.equal(lookups, before.lookups + 100);
-  assert.match(html, /未再確認/);
+  assert.equal(lookups, before.lookups + 1);
+  assert.match(html, /再確認が必要/);
   assert.match(html, /shiftjis → utf8/);
   assert.doesNotMatch(html, /完了後に一覧を更新/);
 });

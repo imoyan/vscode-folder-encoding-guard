@@ -12,16 +12,16 @@ export async function selectScanScope(supplied?: vscode.Uri, selected?: readonly
     const choice = await vscode.window.showQuickPick([
       { label: "現在のファイルだけ", mode: "active", description: "まず1ファイルの結果を確認" },
       { label: "ファイルを選ぶ", mode: "files", description: "複数選択できます" },
-      { label: "フォルダーを選ぶ", mode: "folders", description: "選択したフォルダー以下だけを解析" },
-      { label: "ワークスペース全体", mode: "workspace", description: "設定対象をまとめて解析（件数上限あり）" },
-    ], { title: "解析する範囲を選択", placeHolder: "小さい範囲から確認し、必要に応じて広げられます" });
+      { label: "フォルダーを選ぶ", mode: "folders", description: "選択したフォルダー以下だけを調べる" },
+      { label: "ワークスペース全体", mode: "workspace", description: "設定対象をまとめて調べる（件数上限あり）" },
+    ], { title: "調べる範囲を選択", placeHolder: "小さい範囲から確認し、必要に応じて広げられます" });
     if (!choice) return undefined;
     if (choice.mode === "workspace") return "workspace";
     if (choice.mode === "active") {
       const uri = vscode.window.activeTextEditor?.document.uri;
       uris = uri ? [uri] : [];
     } else {
-      uris = await vscode.window.showOpenDialog({ canSelectFiles: choice.mode === "files", canSelectFolders: choice.mode === "folders", canSelectMany: true, title: "解析する対象を選択", openLabel: "この範囲を解析" });
+      uris = await vscode.window.showOpenDialog({ canSelectFiles: choice.mode === "files", canSelectFolders: choice.mode === "folders", canSelectMany: true, title: "調べる対象を選択", openLabel: "この範囲を調べる" });
     }
   }
   if (!uris?.length) return undefined;

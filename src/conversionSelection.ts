@@ -7,7 +7,7 @@ import { isDirty, hashBytes } from "./conversionResources.js";
 import { ENCODINGS, encodingInfo } from "./rules.js";
 import { readStableResource } from "./stableResourceRead.js";
 import { resolveRealDirectory, resolveRealPathWithin } from "./localPathSafety.js";
-import { DEFAULT_SCAN_EXCLUDE, configuredFileSizeLimit } from "./fileLimits.js";
+import { DEFAULT_MAX_SCAN_FILES, DEFAULT_SCAN_EXCLUDE, configuredFileSizeLimit, configuredScanFileLimit } from "./fileLimits.js";
 import { classifyEncoding, classifyLineEndings } from "./scanCore.js";
 
 export interface ConversionCandidate extends vscode.QuickPickItem {
@@ -131,7 +131,7 @@ export async function selectConversion(
     (targetLineEnding ? ` / 改行 → ${targetLineEnding.toUpperCase()}` : " / 改行は維持");
 
   const config = configurationFor(workspaceFolder.uri);
-  const maxFiles = config.get<number>("maxScanFiles", 5000);
+  const maxFiles = configuredScanFileLimit(config.get<number>("maxScanFiles", DEFAULT_MAX_SCAN_FILES));
   const maxFileSize = configuredFileSizeLimit(
     config.get<number>("maxFileSizeKB", 5120),
   );
