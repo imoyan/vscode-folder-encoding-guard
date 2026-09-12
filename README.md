@@ -126,7 +126,7 @@ npm run package
 
 生成された `.vsix` は VS Code の **Extensions: Install from VSIX...** からインストールできます。
 
-実際のVS Code Extension Hostで操作フローを検証する場合は `npm run test:host` を実行します。macOSでは標準インストール先のVS Codeを使い、それ以外の環境では `VSCODE_EXECUTABLE` にVS Code実行ファイルを指定してください。GUIを起動できる環境とGitが必要です。テスト専用の一時ワークスペース・プロファイルを作成し、終了後に削除します。混在許容と解除、変更の再検知、確認済み操作、Git差分の維持、変換と復元を確認します。ダイアログの回答だけを自動化し、画面描画の見た目は検査しません。通常の `check` / CIとは別の任意実行です。方式は[VS Code公式の拡張テスト](https://code.visualstudio.com/api/working-with-extensions/testing-extension)に従います。
+実際のVS Code Extension Hostで操作フローを検証する場合は `npm run test:host` を実行します。macOSでは標準インストール先のVS Codeを使い、それ以外の環境では `VSCODE_EXECUTABLE` にVS Code実行ファイルを指定してください。GUIを起動できる環境とGitが必要です。テスト専用の一時ワークスペース・プロファイルを作成し、終了後に削除します。混在許容と解除、変更の再検知、確認済み操作、Git差分の維持、変換と復元、521ファイルのページ移動を確認します。ページ検証用ファイルは起動前に作成します。ダイアログの回答だけを自動化し、画面描画の見た目は検査しません。通常の `check` とは別に、CIのmacOSジョブでも実行します。方式は[VS Code公式の拡張テスト](https://code.visualstudio.com/api/working-with-extensions/testing-extension)に従います。
 
 ### ソースの構成
 
@@ -154,7 +154,7 @@ npm run package
 
 [GitHub Releases](https://github.com/imoyan/vscode-folder-encoding-guard/releases) に保存したVSIXとSHA256SUMSを利用できます。Marketplaceへの公開は行っていません。
 
-GitHub ActionsはPRとmainで型検査・lint・テスト・ビルド・VSIX生成を実行します。実機テストは別のVS Codeウィンドウを開きます。通常のCIでは実行しません。
+GitHub ActionsはPRとmainで型検査・lint・テスト・ビルド・VSIX生成を実行します。別のmacOSジョブでVS Codeを準備し、Extension Hostの操作フローテストも実行します。
 
 書き込み失敗時は別の編集を上書きしないよう、即時の上書き復元を行わずバックアップを保持します。明示的な復元操作で現在の内容を確認してください。消失したファイルは自動再作成せず、表示された退避データの保存場所から手動で復元します。
 
