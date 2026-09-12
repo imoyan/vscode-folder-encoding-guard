@@ -4,6 +4,7 @@ import path from "node:path";
 import { createContext, runInContext } from "node:vm";
 import { test } from "node:test";
 import ts from "typescript";
+import * as fileLimits from "../src/fileLimits.js";
 
 function loadModule<T>(name: string, dependencies: Record<string, unknown>): T {
   const source = readFileSync(path.join(process.cwd(), "src", name), "utf8");
@@ -22,6 +23,25 @@ test("resource rules preserve remote URI identity", () => {
     "node:path": path, vscode: { Uri: { file: () => { throw new Error("remote URI must not become local"); } } }, "./rules.js": {},
   });
   assert.equal(rules.fileUriForResource(remote), remote);
+});
+
+test("conversion refresh only reloads an already-open clean document", async () => {
+  const uri = { toString: () => "file:///work/a.txt" };
+  const documents: Array<{ uri: typeof uri; isDirty: boolean }> = [];
+  const calls: unknown[][] = [];
+  const resources = loadModule<{ reopenCleanDocument(uri: unknown, encoding: string): Promise<void> }>("conversionResources.ts", {
+    "node:crypto": {}, "./conversionCore.js": {},
+    vscode: { workspace: { textDocuments: documents, openTextDocument: async (...args: unknown[]) => { calls.push(args); } } },
+  });
+  await resources.reopenCleanDocument(uri, "utf8");
+  assert.equal(calls.length, 0);
+  documents.push({ uri, isDirty: true });
+  await resources.reopenCleanDocument(uri, "utf8");
+  assert.equal(calls.length, 0);
+  documents[0]!.isDirty = false;
+  await resources.reopenCleanDocument(uri, "utf8");
+  assert.equal(calls.length, 1);
+  assert.equal(calls[0]![0], uri);
 });
 
 test("Explorer badge setting gates findings and rule mismatches outrank baseline changes", () => {
@@ -142,17 +162,28 @@ test("reopening a comparison side preserves both URIs and labels their encodings
 
 test("operation log preserves separate conversions and display changes with bounded persistence", async () => {
   const state = new Map<string, unknown>();
-  const module = loadModule<{ EncodingOperationLog: new (state: unknown) => { append(entry: unknown): void; forFile(uri: unknown): readonly { kind: string }[] } }>("encodingOperations.ts", {
+  const module = loadModule<{ EncodingOperationLog: new (state: unknown) => { append(entry: unknown): void; forFile(uri: unknown): readonly { kind: string }[]; forFiles(uris: readonly unknown[]): ReadonlyMap<string, readonly { kind: string }[]> } }>("encodingOperations.ts", {
     vscode: { EventEmitter: class { event = () => {}; fire() {} }, window: { showWarningMessage() {} } },
   });
   const storage = { get: (key: string) => state.get(key), update: async (key: string, value: unknown) => { state.set(key, value); } };
   const log = new module.EncodingOperationLog(storage);
   const uri = { toString: () => "file:///a.txt" };
+  const other = { toString: () => "file:///b.txt" };
+  const missing = { toString: () => "file:///missing.txt" };
   log.append({ uri: uri.toString(), kind: "convert", from: "shiftjis", to: "utf8", at: 1 });
+  log.append({ uri: other.toString(), kind: "restore", from: "utf8", to: "shiftjis", at: 1 });
   log.append({ uri: uri.toString(), kind: "reopen", from: "utf8", to: "shiftjis", at: 2 });
   await new Promise(resolve => setTimeout(resolve, 0));
   const reloaded = new module.EncodingOperationLog(storage);
   assert.deepEqual(Array.from(reloaded.forFile(uri), item => item.kind), ["convert", "reopen"]);
+  assert.deepEqual(Array.from(reloaded.forFiles([uri]).get(uri.toString()) ?? [], item => item.kind), ["convert", "reopen"]);
+  const grouped = reloaded.forFiles([uri, other, uri, missing]);
+  assert.equal(grouped.size, 2);
+  assert.deepEqual(Array.from(grouped.get(uri.toString()) ?? [], item => item.kind), ["convert", "reopen"]);
+  assert.deepEqual(Array.from(grouped.get(other.toString()) ?? [], item => item.kind), ["restore"]);
+  assert.equal(grouped.has(missing.toString()), false);
+  assert.equal(reloaded.forFiles([uri]).has(other.toString()), false);
+  assert.equal(reloaded.forFiles([]).size, 0);
   for (let at = 3; at < 1005; at++) log.append({ uri: uri.toString(), kind: "reopen", from: "utf8", to: "shiftjis", at });
   assert.equal(log.forFile(uri).length, 1000);
 });
@@ -165,13 +196,14 @@ test("inventory messages only address displayed files and block duplicate conver
   const uri = { fsPath: "/work/a.txt", toString: () => "file:///work/a.txt" };
   const module = loadModule<{ EncodingInventory: new (log: unknown) => { show(): void; update(snapshot: unknown): void } }>("encodingInventory.ts", {
     "node:crypto": { randomBytes: () => ({ toString: () => "testnonce" }) },
+    "./fileLimits.js": fileLimits,
     "./encodingView.js": { summaryLabel: (value: string) => value, lineEndingLabel: (value: string) => value },
     "./rules.js": { encodingInfo: (id: string) => ({ label: id }) },
     vscode: { ViewColumn: { Active: 1 }, workspace: { textDocuments: [] }, window: {
       createWebviewPanel: () => ({ webview, onDidDispose() {}, reveal() {} }), showErrorMessage() {},
     }, commands: { executeCommand: (...args: unknown[]) => { calls.push(args); return new Promise<void>(resolve => { finish = resolve; }); } } },
   });
-  const inventory = new module.EncodingInventory({ forFile: () => [] });
+  const inventory = new module.EncodingInventory({ forFiles: (uris: ReadonlyArray<typeof uri>) => new Map(uris.map(item => [item.toString(), []])) });
   inventory.show(); inventory.update({ files: [{ uri, displayPath: "a.txt", encoding: "utf8", lineEnding: "lf" }] });
   const revision = Number(/revision:(\d+)/.exec(webview.html)![1]);
   receive({ action: "convert", index: 0, revision: revision - 1 });
@@ -204,15 +236,17 @@ test("inventory defers per-file and editor refreshes throughout a large conversi
     refresh(): void; setConversionActive(active: boolean): void;
   } }>("encodingInventory.ts", {
     "node:crypto": { randomBytes: () => ({ toString: () => "testnonce" }) },
+    "./fileLimits.js": fileLimits,
     "./encodingView.js": { summaryLabel: (value: string) => value, lineEndingLabel: (value: string) => value },
     "./rules.js": { encodingInfo: (id: string) => ({ label: id }) },
     vscode: { ViewColumn: { Active: 1 }, workspace: { textDocuments: [] }, window: {
       createWebviewPanel: () => ({ webview, onDidDispose() {}, reveal() {} }),
     } },
   });
-  const inventory = new module.EncodingInventory({ forFile: () => {
+  const inventory = new module.EncodingInventory({ forFiles: (uris: ReadonlyArray<typeof uri>) => {
     lookups++;
-    return converted ? [{ kind: "convert", from: "shiftjis", to: "utf8", at: 0 }] : [];
+    const operations = converted ? [{ kind: "convert", from: "shiftjis", to: "utf8", at: 0 }] : [];
+    return new Map(uris.map(item => [item.toString(), operations]));
   } });
   inventory.show();
   inventory.update({ files: Array.from({ length: 100 }, () => ({ uri, displayPath: "a.txt", encoding: "shiftjis", lineEnding: "lf" })) });
@@ -227,8 +261,8 @@ test("inventory defers per-file and editor refreshes throughout a large conversi
   assert.equal(lookups, before.lookups);
   inventory.setConversionActive(false);
   assert.equal(renders, before.renders + 1);
-  assert.equal(lookups, before.lookups + 100);
-  assert.match(html, /未再確認/);
+  assert.equal(lookups, before.lookups + 1);
+  assert.match(html, /再確認が必要/);
   assert.match(html, /shiftjis → utf8/);
   assert.doesNotMatch(html, /完了後に一覧を更新/);
 });
@@ -262,13 +296,14 @@ test("inventory offers both navigation bars and converts only its trusted folder
     show(): void; update(snapshot: unknown, folder?: unknown): void; invalidate(changed: boolean): void;
   } }>("encodingInventory.ts", {
     "node:crypto": { randomBytes: () => ({ toString: () => "testnonce" }) },
+    "./fileLimits.js": fileLimits,
     "./encodingView.js": { summaryLabel: (value: string) => value, lineEndingLabel: (value: string) => value },
     "./rules.js": { encodingInfo: (id: string) => ({ label: id }) },
     vscode: { ViewColumn: { Active: 1 }, workspace: { textDocuments: [] }, window: {
       createWebviewPanel: () => ({ webview, onDidDispose() {}, reveal() {} }), showErrorMessage() {},
     }, commands: { executeCommand: (...args: unknown[]) => { calls.push(args); return new Promise<void>(resolve => { finish = resolve; }); } } },
   });
-  const inventory = new module.EncodingInventory({ forFile: () => [] });
+  const inventory = new module.EncodingInventory({ forFiles: () => new Map() });
   inventory.show(); inventory.update({ files: [], hasMore: true }, folder);
   assert.equal((webview.html.match(/data-action="continue"/g) ?? []).length, 2);
   assert.equal((webview.html.match(/data-action="next"/g) ?? []).length, 2);

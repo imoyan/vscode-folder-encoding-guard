@@ -23,6 +23,11 @@ try {
   const plain = path.join(temporary, "plain");
   const tracked = path.join(temporary, "tracked");
   await Promise.all([extension, plain, tracked].map((dir) => fs.mkdir(dir)));
+  // Prepare paging fixtures before VS Code starts, avoiding delayed create events.
+  const paging = path.join(temporary, "paging");
+  await fs.mkdir(paging);
+  await Promise.all(Array.from({ length: 521 }, (_, index) =>
+    fs.writeFile(path.join(paging, `preview-${String(index).padStart(3, "0")}.txt`), "hello\n")));
   const manifest = JSON.parse(await fs.readFile(path.join(root, "package.json"), "utf8"));
   await fs.writeFile(path.join(extension, "package.json"), JSON.stringify({ ...manifest, main: "./extension.cjs", activationEvents: [] }));
   const workspace = path.join(temporary, "test.code-workspace");
@@ -49,6 +54,7 @@ try {
   await esbuild.build({ ...shared, entryPoints: ["test/host/suite.ts"], outfile: path.join(extension, "suite.cjs"), external: ["vscode"], plugins: [driverPlugin] });
   const env = { ...process.env };
   env.FEG_HOST_RESULT = path.join(temporary, "passed.txt");
+  env.FEG_HOST_PAGING = paging;
   delete env.ELECTRON_RUN_AS_NODE;
   const result = await new Promise((resolve, reject) => {
     const child = spawn(executable, [workspace, "--new-window", "--skip-welcome", "--skip-release-notes", "--disable-updates", "--disable-workspace-trust", "--disable-extensions", "--user-data-dir", path.join(temporary, "profile"), "--extensions-dir", path.join(temporary, "extensions"), "--extensionDevelopmentPath", extension, "--extensionTestsPath", path.join(extension, "suite.cjs")], { env, stdio: "inherit", timeout: 180000 });
