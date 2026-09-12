@@ -140,7 +140,8 @@ export function activate(context: vscode.ExtensionContext): void {
           scanHasResult = true;
           retainedSnapshot = { ...(retainedSnapshot ? appendScanSnapshot(retainedSnapshot, snapshot) : { ...snapshot, headVerifications: retainGitVerifications(snapshot.headVerifications ?? []) }), scopeLabel: scanScope?.label };
           void vscode.commands.executeCommand("setContext", "folderEncodingGuard.hasMore", !!retainedSnapshot.hasMore);
-          inventory.update({ ...retainedSnapshot, scopeLabel: retainedSnapshot.scopeLabel ?? "ワークスペース全体（ルール設定のあるフォルダーはルール対象のみ）" });
+          const inventoryFolder = scanScope?.targets.length === 1 && scanScope.targets[0]?.directory && !scanScope.targets[0].rulesOnly ? scanScope.targets[0].uri : undefined;
+          inventory.update({ ...retainedSnapshot, scopeLabel: retainedSnapshot.scopeLabel ?? "ワークスペース全体（ルール設定のあるフォルダーはルール対象のみ）" }, inventoryFolder);
           rulesProvider.setSnapshot(retainedSnapshot);
           decorationProvider.setSnapshot(retainedSnapshot);
           void notifyGitIssues(context, retainedSnapshot.gitStatuses);

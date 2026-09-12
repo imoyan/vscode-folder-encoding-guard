@@ -915,6 +915,7 @@ test("folder inventory includes unconfigured files, separates read settings and 
   await h.command("inspectFolderInventory", h.uri("part"));
   assert.ok(h.inventoryWebview.html.includes("part/a.txt"));
   assert.ok(h.inventoryWebview.html.includes("part/b.csv"));
+  assert.ok(h.inventoryWebview.html.includes('data-action="convertFolder"'));
   assert.ok(!h.inventoryWebview.html.includes("outside.txt"));
   assert.ok(h.inventoryWebview.html.includes("エディターの読み込み"));
   h.emit("fileChange", "part/a.txt");
@@ -963,6 +964,7 @@ test("workspace inventory identifies its rule-filtered scope", async t => {
   await h.command("showInventory");
   assert.ok(h.inventoryWebview.html.includes("a.txt"));
   assert.ok(!h.inventoryWebview.html.includes("b.csv"));
+  assert.ok(!h.inventoryWebview.html.includes('data-action="convertFolder"'));
   assert.ok(h.inventoryWebview.html.includes("ワークスペース全体（ルール設定のあるフォルダーはルール対象のみ）"));
   assert.ok(!h.inventoryWebview.html.includes("ルール設定なしでもフォルダーを調べられます"));
   await h.command("inspectFolderInventory", h.uri(""));

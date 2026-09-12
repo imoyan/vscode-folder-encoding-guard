@@ -264,10 +264,12 @@ export class RulesProvider implements vscode.TreeDataProvider<ViewItem> {
       const allowanceCount = (vscode.workspace.workspaceFolders ?? []).reduce(
         (count, folder) => count + getAllowedMixedLineEndings(folder).length + getDisallowedMixedLineEndings(folder).length, 0,
       );
-      const inventory = new MessageItem("フォルダーを調べる");
-      inventory.command = { command: "folderEncodingGuard.inspectFolderInventory", title: "フォルダーを調べる" };
+      const inventory = new MessageItem("フォルダーの文字コードを調べる");
+      inventory.command = { command: "folderEncodingGuard.inspectFolderInventory", title: "フォルダーの文字コードを調べる" };
+      inventory.tooltip = "フォルダーを選び、保存済みファイルの文字コードを調べます。";
       const previousInventory = new MessageItem("調べた結果を見る");
       previousInventory.command = { command: "folderEncodingGuard.showInventory", title: "調べた結果を見る" };
+      previousInventory.tooltip = "最後に調べた結果をそのまま表示します。";
       return [
         inventory, previousInventory,
         new GroupItem("scope", "確認範囲", this.scopeLabel ?? "範囲を選んで調べられます"),
